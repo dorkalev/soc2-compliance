@@ -1,0 +1,204 @@
+name: SOC2 Compliance Check
+
+on:
+  workflow_call:
+    inputs:
+      pr_body:
+        description: "Pull request body text"
+        required: true
+        type: string
+      pr_number:
+        description: "Pull request number"
+        required: true
+        type: string
+      repo:
+        description: "Repository being checked (owner/name)"
+        required: true
+        type: string
+      base_branch:
+        description: "Base branch to diff against"
+        required: false
+        type: string
+        default: "main"
+      ticket_pattern:
+        description: "Regex pattern for ticket IDs (e.g., 'PROJ-[0-9]+')"
+        required: true
+        type: string
+      issues_path:
+        description: "Path to issue requirement files"
+        required: false
+        type: string
+        default: "issues"
+      specs_path:
+        description: "Path to technical spec files"
+        required: false
+        type: string
+        default: "specs"
+      linear_team_id:
+        description: "Linear team ID (optional, for Linear integration)"
+        required: false
+        type: string
+      fail_on_unspecced:
+        description: "Fail if changes are not covered by specs"
+        required: false
+        type: boolean
+        default: true
+      fail_on_missing_ticket:
+        description: "Fail if no ticket is referenced in PR"
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      GEMINI_API_KEY:
+        required: true
+      LINEAR_API_KEY:
+        required: false
+      REPO_TOKEN:
+        required: true
+    outputs:
+      compliant:
+        description: "Whether the PR is compliant"
+        value: ${{ jobs.verify.outputs.compliant }}
+      report:
+        description: "Compliance report JSON"
+        value: ${{ jobs.verify.outputs.report }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      compliant: ${{ steps.check.outputs.compliant }}
+      report: ${{ steps.check.outputs.report }}
+
+    steps:
+      - name: Checkout compliance tools
+        uses: actions/checkout@v4
+
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repo }}
+          token: ${{ secrets.REPO_TOKEN }}
+          path: ./target
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Fetch base branch
+        working-directory: ./target
+        run: git fetch origin ${{ inputs.base_branch }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install httpx google-genai
+
+      - name: Run compliance check
+        id: check
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          PR_BODY: ${{ inputs.pr_body }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          TARGET_REPO: ./target
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          TICKET_PATTERN: ${{ inputs.ticket_pattern }}
+          ISSUES_PATH: ${{ inputs.issues_path }}
+          SPECS_PATH: ${{ inputs.specs_path }}
+          LINEAR_TEAM_ID: ${{ inputs.linear_team_id }}
+          FAIL_ON_UNSPECCED: ${{ inputs.fail_on_unspecced }}
+          FAIL_ON_MISSING_TICKET: ${{ inputs.fail_on_missing_ticket }}
+        run: |
+          python scripts/verify_compliance.py | tee compliance_report.json
+
+          # Extract results for outputs
+          COMPLIANT=$(jq -r '.compliant' compliance_report.json)
+          echo "compliant=$COMPLIANT" >> $GITHUB_OUTPUT
+
+          # Store full report (escape for GitHub Actions)
+          REPORT=$(cat compliance_report.json | jq -c .)
+          echo "report=$REPORT" >> $GITHUB_OUTPUT
+
+      - name: Post comment to PR
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.REPO_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync('compliance_report.json', 'utf8'));
+
+            const icon = report.compliant ? ':white_check_mark:' : ':x:';
+            const status = report.compliant ? 'Passed' : 'Failed';
+
+            let body = `## ${icon} SOC2 Compliance Check: ${status}\n\n`;
+            body += `**Summary:** ${report.summary}\n\n`;
+
+            if (report.tickets_found && report.tickets_found.length > 0) {
+              body += `### Tickets Referenced\n`;
+              report.tickets_found.forEach(t => {
+                body += `- ${t}\n`;
+              });
+              body += '\n';
+            }
+
+            if (report.issues && report.issues.length > 0) {
+              body += `### Issues Found\n`;
+              report.issues.forEach(issue => {
+                body += `- :warning: ${issue}\n`;
+              });
+              body += '\n';
+            }
+
+            if (report.unspecced_changes && report.unspecced_changes.length > 0) {
+              body += `### Unspecced Changes\n`;
+              body += `The following changes are not covered by any spec:\n`;
+              report.unspecced_changes.forEach(c => {
+                body += `- \`${c}\`\n`;
+              });
+              body += '\n';
+            }
+
+            if (report.spec_coverage) {
+              body += `### Spec Coverage\n`;
+              body += `${report.spec_coverage}\n\n`;
+            }
+
+            body += `---\n`;
+            body += `<sub>Generated by [soc2-compliance](https://github.com/dorkalev/soc2-compliance)</sub>`;
+
+            // Find existing comment to update
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: '${{ inputs.repo }}'.split('/')[0],
+              repo: '${{ inputs.repo }}'.split('/')[1],
+              issue_number: parseInt('${{ inputs.pr_number }}'),
+            });
+
+            const botComment = comments.find(c =>
+              c.body.includes('SOC2 Compliance Check') &&
+              c.body.includes('soc2-compliance')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: '${{ inputs.repo }}'.split('/')[0],
+                repo: '${{ inputs.repo }}'.split('/')[1],
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: '${{ inputs.repo }}'.split('/')[0],
+                repo: '${{ inputs.repo }}'.split('/')[1],
+                issue_number: parseInt('${{ inputs.pr_number }}'),
+                body: body
+              });
+            }
+
+      - name: Fail if not compliant
+        if: steps.check.outputs.compliant == 'false'
+        run: |
+          echo "::error::SOC2 Compliance check failed. See PR comment for details."
+          exit 1

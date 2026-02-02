@@ -1,0 +1,48 @@
+# Example: How to call the SOC2 compliance checker from your repository
+#
+# Copy this file to your repo at: .github/workflows/compliance.yml
+# Then customize the ticket_pattern and other inputs for your project.
+
+name: SOC2 Compliance
+
+on:
+  pull_request:
+    branches: [main, staging, develop]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Only run on non-draft PRs
+jobs:
+  compliance-check:
+    if: github.event.pull_request.draft == false
+    uses: dorkalev/soc2-compliance/.github/workflows/compliance-check.yml@main
+    with:
+      # Required inputs
+      pr_body: ${{ github.event.pull_request.body }}
+      pr_number: ${{ github.event.pull_request.number }}
+      repo: ${{ github.repository }}
+
+      # Ticket pattern - customize for your project
+      # Examples:
+      #   Jira:   "[A-Z]+-[0-9]+"
+      #   Linear: "[A-Z]+-[0-9]+"
+      #   GitHub: "#[0-9]+"
+      ticket_pattern: "PROJ-[0-9]+"
+
+      # Branch to compare against
+      base_branch: main
+
+      # Paths to your documentation (relative to repo root)
+      issues_path: issues
+      specs_path: specs
+
+      # Optional: Linear team ID for filtering tickets
+      # linear_team_id: "your-team-id"
+
+      # Policy settings
+      fail_on_unspecced: true      # Fail if changes aren't documented
+      fail_on_missing_ticket: true  # Fail if no ticket in PR body
+
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}  # Optional
+      REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
