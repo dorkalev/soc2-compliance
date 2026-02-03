@@ -50,9 +50,10 @@ def fetch_linear_ticket(ticket_id: str) -> dict | None:
     if not LINEAR_API_KEY:
         return None
 
+    # Use searchIssues to find by identifier (e.g., "BOL-410")
     query = """
-    query($filter: IssueFilter) {
-        issues(filter: $filter, first: 1) {
+    query SearchIssue($term: String!) {
+        searchIssues(term: $term, first: 5) {
             nodes {
                 id
                 identifier
@@ -65,9 +66,6 @@ def fetch_linear_ticket(ticket_id: str) -> dict | None:
     }
     """
 
-    # Build filter based on identifier
-    filter_var = {"identifier": {"eq": ticket_id}}
-
     try:
         resp = httpx.post(
             "https://api.linear.app/graphql",
@@ -75,13 +73,23 @@ def fetch_linear_ticket(ticket_id: str) -> dict | None:
                 "Authorization": LINEAR_API_KEY,
                 "Content-Type": "application/json",
             },
-            json={"query": query, "variables": {"filter": filter_var}},
+            json={"query": query, "variables": {"term": ticket_id}},
             timeout=30,
         )
         resp.raise_for_status()
         data = resp.json()
 
-        nodes = data.get("data", {}).get("issues", {}).get("nodes", [])
+        # Check for errors in response
+        if "errors" in data:
+            print(f"Warning: Linear API error for {ticket_id}: {data['errors']}", file=sys.stderr)
+            return None
+
+        nodes = data.get("data", {}).get("searchIssues", {}).get("nodes", [])
+        # Find exact match for the identifier
+        for node in nodes:
+            if node.get("identifier") == ticket_id:
+                return node
+        # Fallback to first result if no exact match
         if nodes:
             return nodes[0]
     except Exception as e:
