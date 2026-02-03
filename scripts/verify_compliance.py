@@ -45,6 +45,43 @@ def extract_ticket_ids(text: str) -> list[str]:
     return list(set(matches))  # Deduplicate
 
 
+def generate_issue_file_content(ticket_id: str, linear_data: dict | None) -> str:
+    """Generate issue file markdown content from Linear ticket data."""
+    if not linear_data:
+        return f"""# {ticket_id}
+
+## Summary
+<!-- Add summary from Linear ticket -->
+
+## Acceptance Criteria
+- [ ] <!-- Add acceptance criteria -->
+
+## Out of Scope
+- <!-- Items explicitly excluded -->
+"""
+
+    title = linear_data.get("title", "")
+    description = linear_data.get("description", "") or ""
+    state = linear_data.get("state", {}).get("name", "")
+    labels = [label.get("name") for label in linear_data.get("labels", {}).get("nodes", [])]
+
+    return f"""# {ticket_id}: {title}
+
+## Summary
+{description if description else "<!-- Add summary -->"}
+
+## Acceptance Criteria
+- [ ] <!-- Extract from description or add manually -->
+
+## Out of Scope
+- <!-- Items explicitly excluded -->
+
+---
+*Status: {state}*
+*Labels: {", ".join(labels) if labels else "None"}*
+"""
+
+
 def fetch_linear_ticket(ticket_id: str) -> dict | None:
     """Fetch ticket details from Linear API."""
     if not LINEAR_API_KEY:
@@ -614,6 +651,16 @@ def main():
 
     # 3. Read local issue and spec files
     local_files = read_local_files(ticket_ids, TARGET_REPO)
+
+    # 3b. Generate suggested issue files for tickets without local files
+    missing_issue_files = {}
+    for ticket_id in ticket_ids:
+        if ticket_id not in local_files["issues"]:
+            content = generate_issue_file_content(ticket_id, tickets_data.get(ticket_id))
+            missing_issue_files[ticket_id] = content
+
+    if missing_issue_files:
+        report["suggested_issue_files"] = missing_issue_files
 
     # 4. Get diff
     diff, diff_stats = get_diff(TARGET_REPO)
