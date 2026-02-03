@@ -316,6 +316,42 @@ Update the PR body using: gh pr edit <number> --body-file <updated_body.md>"""
     }
 
 
+def extract_documented_files(pr_body: str) -> set[str]:
+    """Extract file paths mentioned in PR body's Key Changes table."""
+    documented = set()
+
+    # Look for markdown table rows with file paths
+    # Patterns: | `path/to/file.py` | or | path/to/file.py |
+    lines = pr_body.split("\n")
+    in_key_changes = False
+
+    for line in lines:
+        # Detect "Key Changes" section
+        if "key changes" in line.lower() or "### key changes" in line.lower():
+            in_key_changes = True
+            continue
+        # Detect end of section (next header)
+        if in_key_changes and line.startswith("##"):
+            in_key_changes = False
+            continue
+
+        if "|" in line:
+            # Extract file paths from table cells
+            # Match backtick-wrapped or plain paths
+            import re
+            # Match: `path/to/file.ext` or path/to/file.ext in table cells
+            matches = re.findall(r'`([^`]+)`|(?<=\|)\s*([a-zA-Z0-9_./\-*]+\.[a-zA-Z0-9]+)', line)
+            for match in matches:
+                path = match[0] or match[1]
+                if path and "/" in path:
+                    # Handle wildcards like "og-image.*" by extracting base name
+                    documented.add(path.strip())
+                    # Also add without backticks
+                    documented.add(path.strip().replace("`", ""))
+
+    return documented
+
+
 def verify_with_gemini(
     tickets_data: dict,
     local_files: dict,
@@ -328,6 +364,24 @@ def verify_with_gemini(
     from google import genai
 
     client = genai.Client(api_key=GEMINI_API_KEY)
+
+    # Pre-extract files already documented in PR body
+    documented_files = extract_documented_files(pr_body)
+
+    # Build list of files that are ALREADY documented
+    already_documented = []
+    for f in changed_files:
+        for doc in documented_files:
+            # Exact match or partial match (for wildcards)
+            if f == doc or f in doc or doc in f:
+                already_documented.append(f)
+                break
+            # Handle base name matching (e.g., "og-image.jpg" matches "og-image")
+            if "/" in f:
+                base = f.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+                if base in doc:
+                    already_documented.append(f)
+                    break
 
     # Build context sections
     context_parts = []
@@ -370,6 +424,9 @@ def verify_with_gemini(
     if len(full_context) > MAX_CONTEXT_CHARS:
         full_context = full_context[:MAX_CONTEXT_CHARS] + "\n\n... (context truncated due to size)"
 
+    # Build the pre-documented files list for the prompt
+    documented_files_str = "\n".join(f"- {f}" for f in already_documented) if already_documented else "None identified"
+
     prompt = f"""You are a SOC2 compliance auditor reviewing a pull request.
 
 Your task is to verify ALIGNMENT between:
@@ -380,19 +437,31 @@ Your task is to verify ALIGNMENT between:
 
 {full_context}
 
+## ALREADY DOCUMENTED FILES (DO NOT FLAG THESE)
+
+The following files are ALREADY mentioned in the PR body's Key Changes table or elsewhere in the documentation.
+DO NOT include these in "unspecced_changes":
+
+{documented_files_str}
+
 ## Analysis Required
 
 1. **Ticket Coverage**: Are the code changes implementing what's described in the tickets?
 2. **Spec Alignment**: Do the changes follow the technical specifications?
-3. **Unspecced Changes**: Are there any code changes NOT documented in tickets/specs or the PR description's Key Changes table?
+3. **Unspecced Changes**: ONLY flag files that are:
+   - NOT in the "ALREADY DOCUMENTED FILES" list above
+   - NOT mentioned in the PR body's Key Changes table
+   - NOT mentioned in specs or issue files
 4. **Incomplete Implementation**: Are there spec items NOT implemented in the code?
 5. **Scope Creep**: Does the PR include changes beyond the ticket scope?
 
-## Important
+## CRITICAL RULES FOR "unspecced_changes"
 
-- Files listed in the PR description's "Key Changes" table ARE considered documented
-- Only flag files as "unspecced" if they are NOT mentioned anywhere in PR body, specs, or issues
-- Return actual file paths when possible, not just descriptions
+- If a file path appears ANYWHERE in the PR body (especially the Key Changes table), it is NOT unspecced
+- If a file like "web/static/og-image.jpg" is listed in Key Changes, it is documented
+- Image files, CSS files, and other static assets listed in Key Changes are documented
+- Return an EMPTY array [] for unspecced_changes if all files are documented
+- Only include files that genuinely have NO mention in any documentation
 
 ## Output
 
@@ -402,7 +471,7 @@ Respond with a JSON object (no markdown, just raw JSON):
     "summary": "One sentence summary of compliance status",
     "tickets_found": ["list", "of", "ticket", "ids"],
     "issues": ["list of compliance issues found"],
-    "unspecced_changes": ["actual/file/paths.py or brief descriptions for files not in PR body, specs, or issues"],
+    "unspecced_changes": ["ONLY files not mentioned anywhere - empty array if all documented"],
     "unimplemented_specs": ["spec items not found in the code"],
     "spec_coverage": "Brief description of how well specs cover the changes",
     "recommendations": ["suggestions for improving compliance"]
@@ -410,6 +479,7 @@ Respond with a JSON object (no markdown, just raw JSON):
 
 Be strict but fair. Minor documentation changes and test files don't need specs.
 Config changes and dependency updates should still reference a ticket.
+If all changed files are documented in the PR body, return "compliant": true and "unspecced_changes": [].
 """
 
     try:
