@@ -624,7 +624,7 @@ Respond with JSON only (no markdown):
             # Check for rate limiting (429) or resource exhausted errors
             if "429" in str(e) or "resource_exhausted" in error_str or "rate" in error_str:
                 wait_time = INITIAL_BACKOFF ** (attempt + 1)
-                print(f"Rate limited (attempt {attempt + 1}/{MAX_RETRIES}), waiting {wait_time}s...", file=sys.stderr)
+                # Silently retry - don't print to stderr as workflow captures it
                 time.sleep(wait_time)
                 continue
 
@@ -711,7 +711,7 @@ def main():
     merge_commit_tickets = [t for t in ticket_ids if t not in branch_commit_tickets]
     if merge_commit_tickets:
         report["merge_commit_tickets"] = merge_commit_tickets
-        print(f"Note: Tickets in PR but not in commits: {merge_commit_tickets}", file=sys.stderr)
+        # Note: Don't print here - workflow captures both stdout and stderr to JSON file
 
     # 6. Handle large diffs
     if len(diff) > MAX_DIFF_CHARS:
