@@ -187,9 +187,21 @@ jobs:
               body += '\n';
             }
 
+            // PR → Linear: Invalid tickets
+            if (report.invalid_tickets && report.invalid_tickets.length > 0) {
+              body += `### :rotating_light: Invalid Tickets (PR → Linear)\n`;
+              body += `These tickets are listed in the PR but **do not exist in Linear**:\n\n`;
+              report.invalid_tickets.forEach(t => {
+                body += `- :x: \`${t}\`\n`;
+              });
+              body += '\n';
+              body += `**Fix:** Remove these ticket IDs from the PR description or create them in Linear.\n\n`;
+            }
+
+            // Code → PR: Unspecced changes
             if (report.unspecced_changes && report.unspecced_changes.length > 0) {
-              body += `### :warning: Unspecced Changes\n`;
-              body += `The following changes are not documented in PR body, specs, or issues:\n`;
+              body += `### :warning: Unspecced Changes (Code → PR)\n`;
+              body += `These code changes are **not documented** in the PR description:\n`;
               report.unspecced_changes.forEach(c => {
                 body += `- \`${c}\`\n`;
               });
@@ -226,9 +238,10 @@ jobs:
               }
             }
 
+            // PR → Code: Unimplemented tickets
             if (report.unimplemented_tickets && report.unimplemented_tickets.length > 0) {
-              body += `### :rotating_light: Unimplemented Tickets\n`;
-              body += `The following tickets are listed in the PR description but have **NO corresponding code changes**:\n\n`;
+              body += `### :rotating_light: Unimplemented Tickets (PR → Code)\n`;
+              body += `These tickets are listed in the PR but have **NO corresponding code changes**:\n\n`;
               report.unimplemented_tickets.forEach(t => {
                 body += `- :x: \`${t}\`\n`;
               });
@@ -249,6 +262,17 @@ jobs:
               });
               body += `\`\`\`\n\n`;
               body += `</details>\n\n`;
+            }
+
+            // PR → Issues/Specs: Missing documentation (warning only)
+            if (report.missing_documentation && report.missing_documentation.length > 0) {
+              body += `### :memo: Missing Documentation (PR → Issues/Specs)\n`;
+              body += `These tickets don't have corresponding documentation files:\n\n`;
+              report.missing_documentation.forEach(t => {
+                body += `- :warning: \`${t}\`\n`;
+              });
+              body += '\n';
+              body += `Consider adding \`issues/{TICKET}.md\` and/or \`specs/{feature}.md\` files.\n\n`;
             }
 
             if (report.spec_coverage) {

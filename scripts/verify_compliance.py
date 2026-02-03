@@ -427,77 +427,81 @@ def verify_with_gemini(
     # Build the pre-documented files list for the prompt
     documented_files_str = "\n".join(f"- {f}" for f in already_documented) if already_documented else "None identified"
 
-    prompt = f"""You are a SOC2 compliance auditor reviewing a pull request.
+    prompt = f"""You are a SOC2 compliance auditor. The PR DESCRIPTION is the CENTRAL JUNCTION connecting all audit artifacts.
 
-Your task is to verify ALIGNMENT between:
-1. Issue tracker tickets (requirements from project management)
-2. Local issue files (product requirements documentation)
-3. Technical spec files (implementation specifications)
-4. The actual code changes in the PR
+## AUDIT PHILOSOPHY
+
+The PR description is the **single source of truth** for compliance. It must accurately connect:
+- Linear tickets (issue tracker)
+- Local issue files (issues/*.md)
+- Technical specs (specs/*.md)
+- Actual code changes (git diff)
+
+Every claim in the PR must be verifiable. Every change must be documented.
 
 {full_context}
 
-## ALREADY DOCUMENTED FILES (DO NOT FLAG THESE)
+## FILES ALREADY DOCUMENTED IN PR
 
-The following files are ALREADY mentioned in the PR body's Key Changes table or elsewhere in the documentation.
-DO NOT include these in "unspecced_changes":
+These files appear in the PR body's Key Changes table - do NOT flag as unspecced:
 
 {documented_files_str}
 
-## Analysis Required
+## VALIDATION CHECKS (PR Description as Junction)
 
-1. **Ticket Coverage**: Are the code changes implementing what's described in the tickets?
-2. **Spec Alignment**: Do the changes follow the technical specifications?
-3. **Unspecced Changes**: ONLY flag files that are:
-   - NOT in the "ALREADY DOCUMENTED FILES" list above
-   - NOT mentioned in the PR body's Key Changes table
-   - NOT mentioned in specs or issue files
-4. **Incomplete Implementation**: Are there spec items NOT implemented in the code?
-5. **Scope Creep**: Does the PR include changes beyond the ticket scope?
-6. **CRITICAL - Unimplemented Tickets**: For EACH ticket ID in the PR description's Linear Tickets table:
-   - Check if the code changes actually implement that ticket
-   - A ticket is "implemented" if files in the diff relate to its description/requirements
-   - If a ticket is listed but NO code changes relate to it, flag it as "unimplemented_tickets"
-   - This prevents false audit trails from tickets added by mistake
+### CHECK 1: PR → Linear (Tickets Exist)
+For each ticket in PR's "Linear Tickets" table:
+- Verify it exists in the "Issue Tracker Tickets" section above
+- If a ticket is listed in PR but NOT found in Linear, flag in "invalid_tickets"
 
-## CRITICAL RULES FOR "unspecced_changes"
+### CHECK 2: PR → Code (Tickets Implemented)
+For each ticket in PR's "Linear Tickets" table:
+- Verify the code diff contains changes related to that ticket
+- Check if the ticket ID appears in Key Changes table's "Ticket" column
+- If a ticket is listed but has NO corresponding code changes, flag in "unimplemented_tickets"
+- Exception: Tickets marked "merged from staging" or "from PR #X" are OK
 
-- If a file path appears ANYWHERE in the PR body (especially the Key Changes table), it is NOT unspecced
-- If a file like "web/static/og-image.jpg" is listed in Key Changes, it is documented
-- Image files, CSS files, and other static assets listed in Key Changes are documented
-- Return an EMPTY array [] for unspecced_changes if all files are documented
-- Only include files that genuinely have NO mention in any documentation
+### CHECK 3: Code → PR (Changes Documented)
+For each file in the code diff:
+- Verify it appears in PR body (Key Changes table or description)
+- If a changed file is NOT documented anywhere in PR, flag in "unspecced_changes"
+- Exception: Files in "FILES ALREADY DOCUMENTED" list above are OK
 
-## CRITICAL RULES FOR "unimplemented_tickets"
+### CHECK 4: PR → Issues/Specs (Documentation Exists)
+For tickets claiming implementation:
+- Check if corresponding issues/{{TICKET}}.md file was provided
+- Check if specs mention the feature/ticket
+- Flag gaps in "missing_documentation"
 
-- For EACH ticket in the PR's "Linear Tickets" table, verify code changes exist for it
-- Check both the ticket description AND the Key Changes table's "Ticket" column
-- If a ticket appears in Linear Tickets table but:
-  - Has NO files listed in Key Changes with that ticket ID, AND
-  - Has NO code changes that match its description/requirements
-  - Then it is UNIMPLEMENTED and must be flagged
-- Tickets that are "merged from staging" or explicitly marked as from another PR are OK
-- Return the ticket ID and reason for each unimplemented ticket
+### CHECK 5: Internal Consistency
+- Tickets in Key Changes "Ticket" column should be in Linear Tickets table
+- File paths in Key Changes should exist in the diff
+- Flag inconsistencies in "issues"
 
-## Output
+## OUTPUT FORMAT
 
-Respond with a JSON object (no markdown, just raw JSON):
+Respond with JSON only (no markdown):
 {{
     "compliant": true/false,
-    "summary": "One sentence summary of compliance status",
-    "tickets_found": ["list", "of", "ticket", "ids"],
-    "issues": ["list of compliance issues found"],
-    "unspecced_changes": ["ONLY files not mentioned anywhere - empty array if all documented"],
-    "unimplemented_tickets": ["TICKET-123: reason why no code implements this ticket"],
-    "unimplemented_specs": ["spec items not found in the code"],
-    "spec_coverage": "Brief description of how well specs cover the changes",
-    "recommendations": ["suggestions for improving compliance"]
+    "summary": "One sentence explaining pass/fail",
+    "tickets_found": ["TICKET-1", "TICKET-2"],
+    "issues": ["List of compliance violations"],
+    "invalid_tickets": ["TICKET-X: not found in Linear"],
+    "unimplemented_tickets": ["TICKET-Y: listed in PR but no code changes"],
+    "unspecced_changes": ["path/to/file.py: changed but not in PR description"],
+    "missing_documentation": ["TICKET-Z: no issues/ or specs/ file found"],
+    "unimplemented_specs": ["Spec item X not implemented"],
+    "spec_coverage": "How well specs cover the changes",
+    "recommendations": ["Suggestions to fix compliance issues"]
 }}
 
-Be strict but fair. Minor documentation changes and test files don't need specs.
-Config changes and dependency updates should still reference a ticket.
-If all changed files are documented in the PR body, return "compliant": true and "unspecced_changes": [].
-If all tickets in the PR have corresponding code changes, return "unimplemented_tickets": [].
+## RULES
+
+1. PR description is authoritative - all checks validate against it
+2. Empty arrays [] mean check passed
+3. Any non-empty violation array means "compliant": false
+4. Be strict: false audit trails are worse than strict enforcement
+5. Exceptions: test files, minor docs, and config don't need full spec coverage
 """
 
     try:
@@ -550,8 +554,10 @@ def main():
         "summary": "",
         "tickets_found": [],
         "issues": [],
-        "unspecced_changes": [],
+        "invalid_tickets": [],
         "unimplemented_tickets": [],
+        "unspecced_changes": [],
+        "missing_documentation": [],
         "unimplemented_specs": [],
         "spec_coverage": "",
         "recommendations": [],
@@ -609,24 +615,49 @@ def main():
     # 8. Merge results
     report.update(gemini_result)
 
-    # 9. Apply policy rules
-    if not report["compliant"]:
-        pass  # Already failed
-    elif report.get("unspecced_changes") and FAIL_ON_UNSPECCED:
-        report["compliant"] = False
-        if "Unspecced changes detected" not in report.get("summary", ""):
-            report["summary"] = "Unspecced changes detected: " + report.get("summary", "")
-    elif report.get("unimplemented_tickets"):
-        # CRITICAL: Tickets listed in PR but not implemented = false audit trail
-        report["compliant"] = False
-        if "Unimplemented tickets" not in report.get("summary", ""):
-            report["summary"] = "Unimplemented tickets in PR description: " + report.get("summary", "")
+    # 9. Apply policy rules - PR description is the junction, verify all connections
+    violations = []
+
+    # Check 1: Invalid tickets (PR → Linear)
+    if report.get("invalid_tickets"):
+        violations.append("invalid_tickets")
         report["issues"].append(
-            "PR lists tickets that have no corresponding code changes. "
-            "Remove these tickets from the PR description or implement them."
+            "PR references tickets not found in Linear. "
+            "Remove invalid ticket IDs or create them in Linear first."
         )
-    elif not ticket_ids and FAIL_ON_MISSING_TICKET:
+
+    # Check 2: Unimplemented tickets (PR → Code)
+    if report.get("unimplemented_tickets"):
+        violations.append("unimplemented_tickets")
+        report["issues"].append(
+            "PR lists tickets with no corresponding code changes. "
+            "Remove these tickets or implement them."
+        )
+
+    # Check 3: Unspecced changes (Code → PR)
+    if report.get("unspecced_changes") and FAIL_ON_UNSPECCED:
+        violations.append("unspecced_changes")
+        report["issues"].append(
+            "Code changes not documented in PR description. "
+            "Add them to the Key Changes table."
+        )
+
+    # Check 4: Missing documentation (PR → Issues/Specs)
+    if report.get("missing_documentation"):
+        # This is a warning, not a blocker by default
+        pass
+
+    # Check 5: No tickets at all
+    if not ticket_ids and FAIL_ON_MISSING_TICKET:
+        violations.append("no_tickets")
+        report["issues"].append(
+            f"PR must reference at least one ticket matching pattern: {TICKET_PATTERN}"
+        )
+
+    # Set compliance status based on violations
+    if violations and report.get("compliant", True):
         report["compliant"] = False
+        report["summary"] = f"PR description junction validation failed: {', '.join(violations)}"
 
     # Output
     print(json.dumps(report, indent=2))
