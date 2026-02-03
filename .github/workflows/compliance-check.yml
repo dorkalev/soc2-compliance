@@ -188,12 +188,42 @@ jobs:
             }
 
             if (report.unspecced_changes && report.unspecced_changes.length > 0) {
-              body += `### Unspecced Changes\n`;
-              body += `The following changes are not covered by any spec:\n`;
+              body += `### :warning: Unspecced Changes\n`;
+              body += `The following changes are not documented in PR body, specs, or issues:\n`;
               report.unspecced_changes.forEach(c => {
                 body += `- \`${c}\`\n`;
               });
               body += '\n';
+
+              // Add fix suggestions if available
+              if (report.fix_suggestions) {
+                const suggestions = report.fix_suggestions;
+
+                body += `### :wrench: Suggested Fix\n\n`;
+                body += `Add these entries to your PR's **Key Changes** table:\n\n`;
+
+                body += `<details>\n<summary>📝 Click to expand suggested table rows</summary>\n\n`;
+                body += `\`\`\`markdown\n`;
+                body += `| File | Change | Ticket | Description |\n`;
+                body += `|------|--------|--------|-------------|\n`;
+                if (suggestions.suggested_table_rows) {
+                  suggestions.suggested_table_rows.forEach(row => {
+                    body += row + '\n';
+                  });
+                }
+                body += `\`\`\`\n\n`;
+                body += `</details>\n\n`;
+
+                // Agent prompt
+                body += `<details>\n<summary>🤖 Prompt for your coding agent (Claude Code, Cursor, etc.)</summary>\n\n`;
+                body += `\`\`\`\n`;
+                body += suggestions.agent_prompt || 'Add the unspecced files to the PR description Key Changes table.';
+                body += `\n\`\`\`\n\n`;
+                body += `</details>\n\n`;
+
+                // Quick action hint
+                body += `**Quick fix:** Copy the table rows above and add them to your PR description, or use the agent prompt.\n\n`;
+              }
             }
 
             if (report.spec_coverage) {

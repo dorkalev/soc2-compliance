@@ -224,12 +224,105 @@ def summarize_large_diff(diff: str, repo_path: str) -> str:
     return "\n".join(summary_parts)
 
 
+def generate_fix_suggestions(
+    unspecced_changes: list[str],
+    changed_files: list[str],
+    ticket_ids: list[str],
+    pr_body: str,
+) -> dict:
+    """Generate actionable fix suggestions for unspecced changes."""
+    if not unspecced_changes:
+        return {}
+
+    primary_ticket = ticket_ids[0] if ticket_ids else "TICKET-XXX"
+
+    # Categorize unspecced changes
+    file_changes = []
+    semantic_changes = []
+
+    for change in unspecced_changes:
+        # Check if it looks like a file path
+        if "/" in change or change.endswith((".py", ".js", ".ts", ".md", ".yml", ".yaml", ".json", ".html", ".css")):
+            file_changes.append(change)
+        else:
+            semantic_changes.append(change)
+
+    # Match semantic descriptions to actual files if possible
+    matched_files = []
+    for change in semantic_changes:
+        change_lower = change.lower()
+        for f in changed_files:
+            f_lower = f.lower()
+            # Simple keyword matching
+            if any(word in f_lower for word in change_lower.split() if len(word) > 3):
+                if f not in matched_files and f not in file_changes:
+                    matched_files.append(f)
+                    break
+
+    all_unspecced_files = file_changes + matched_files
+
+    # Generate PR body table rows
+    table_rows = []
+    for filepath in all_unspecced_files[:10]:  # Limit to 10
+        # Determine change type
+        change_type = "Added" if filepath not in pr_body else "Modified"
+        # Generate description based on file type
+        if filepath.endswith(".md"):
+            desc = "Documentation"
+        elif filepath.endswith((".jpg", ".png", ".svg", ".gif")):
+            desc = "Static assets"
+        elif filepath.endswith((".yml", ".yaml")):
+            desc = "Configuration/workflow"
+        elif "test" in filepath.lower():
+            desc = "Test coverage"
+        elif "script" in filepath.lower():
+            desc = "Utility script"
+        else:
+            desc = "Implementation"
+
+        table_rows.append(f"| `{filepath}` | {change_type} | {primary_ticket} | {desc} |")
+
+    # For semantic changes without file matches, create generic rows
+    for change in semantic_changes:
+        if not any(change.lower() in f.lower() for f in matched_files):
+            table_rows.append(f"| *(see below)* | Modified | {primary_ticket} | {change} |")
+
+    if not table_rows:
+        return {}
+
+    # Build the suggested PR body addition
+    suggested_table = "| File | Change | Ticket | Description |\n|------|--------|--------|-------------|\n"
+    suggested_table += "\n".join(table_rows)
+
+    # Build agent prompt
+    agent_prompt = f"""Add the following unspecced files to the PR description's "Key Changes" table.
+
+Files to document:
+{chr(10).join(f"- {f}" for f in all_unspecced_files)}
+
+For each file:
+1. Determine if it was Added or Modified
+2. Link it to ticket {primary_ticket} (or create a new ticket if it's a separate concern)
+3. Write a brief description of what it does
+
+Update the PR body using: gh pr edit <number> --body-file <updated_body.md>"""
+
+    return {
+        "suggested_table_rows": table_rows,
+        "suggested_table": suggested_table,
+        "agent_prompt": agent_prompt,
+        "unspecced_files": all_unspecced_files,
+        "semantic_changes": [c for c in semantic_changes if not any(c.lower() in f.lower() for f in matched_files)],
+    }
+
+
 def verify_with_gemini(
     tickets_data: dict,
     local_files: dict,
     diff: str,
     diff_stats: str,
     pr_body: str,
+    changed_files: list[str],
 ) -> dict:
     """Use Gemini to verify alignment between tickets, specs, and code."""
     from google import genai
@@ -291,9 +384,15 @@ Your task is to verify ALIGNMENT between:
 
 1. **Ticket Coverage**: Are the code changes implementing what's described in the tickets?
 2. **Spec Alignment**: Do the changes follow the technical specifications?
-3. **Unspecced Changes**: Are there any code changes NOT documented in tickets/specs?
+3. **Unspecced Changes**: Are there any code changes NOT documented in tickets/specs or the PR description's Key Changes table?
 4. **Incomplete Implementation**: Are there spec items NOT implemented in the code?
 5. **Scope Creep**: Does the PR include changes beyond the ticket scope?
+
+## Important
+
+- Files listed in the PR description's "Key Changes" table ARE considered documented
+- Only flag files as "unspecced" if they are NOT mentioned anywhere in PR body, specs, or issues
+- Return actual file paths when possible, not just descriptions
 
 ## Output
 
@@ -303,7 +402,7 @@ Respond with a JSON object (no markdown, just raw JSON):
     "summary": "One sentence summary of compliance status",
     "tickets_found": ["list", "of", "ticket", "ids"],
     "issues": ["list of compliance issues found"],
-    "unspecced_changes": ["files or features changed without spec coverage"],
+    "unspecced_changes": ["actual/file/paths.py or brief descriptions for files not in PR body, specs, or issues"],
     "unimplemented_specs": ["spec items not found in the code"],
     "spec_coverage": "Brief description of how well specs cover the changes",
     "recommendations": ["suggestions for improving compliance"]
@@ -327,7 +426,20 @@ Config changes and dependency updates should still reference a ticket.
             lines = response_text.split("\n")
             response_text = "\n".join(lines[1:-1])
 
-        return json.loads(response_text)
+        result = json.loads(response_text)
+
+        # Generate fix suggestions if there are unspecced changes
+        if result.get("unspecced_changes"):
+            ticket_ids = result.get("tickets_found", [])
+            suggestions = generate_fix_suggestions(
+                result["unspecced_changes"],
+                changed_files,
+                ticket_ids,
+                pr_body,
+            )
+            result["fix_suggestions"] = suggestions
+
+        return result
     except json.JSONDecodeError as e:
         return {
             "compliant": False,
@@ -386,11 +498,14 @@ def main():
         print(json.dumps(report, indent=2))
         return
 
-    # 5. Handle large diffs
+    # 5. Get changed files list
+    changed_files = get_changed_files(TARGET_REPO)
+
+    # 6. Handle large diffs
     if len(diff) > MAX_DIFF_CHARS:
         diff = summarize_large_diff(diff, TARGET_REPO)
 
-    # 6. Verify with Gemini
+    # 7. Verify with Gemini
     if not GEMINI_API_KEY:
         report["compliant"] = False
         report["summary"] = "GEMINI_API_KEY not configured"
@@ -399,13 +514,13 @@ def main():
         return
 
     gemini_result = verify_with_gemini(
-        tickets_data, local_files, diff, diff_stats, PR_BODY
+        tickets_data, local_files, diff, diff_stats, PR_BODY, changed_files
     )
 
-    # 7. Merge results
+    # 8. Merge results
     report.update(gemini_result)
 
-    # 8. Apply policy rules
+    # 9. Apply policy rules
     if not report["compliant"]:
         pass  # Already failed
     elif report.get("unspecced_changes") and FAIL_ON_UNSPECCED:
