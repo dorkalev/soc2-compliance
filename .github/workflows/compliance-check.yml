@@ -111,7 +111,25 @@ jobs:
           FAIL_ON_UNSPECCED: ${{ inputs.fail_on_unspecced }}
           FAIL_ON_MISSING_TICKET: ${{ inputs.fail_on_missing_ticket }}
         run: |
-          python scripts/verify_compliance.py | tee compliance_report.json
+          # Run compliance check, capturing both stdout and exit code
+          set +e
+          python scripts/verify_compliance.py > compliance_report.json 2>&1
+          EXIT_CODE=$?
+          set -e
+
+          # If script failed or output is empty, create error report
+          if [ $EXIT_CODE -ne 0 ] || [ ! -s compliance_report.json ]; then
+            echo "Script failed with exit code $EXIT_CODE"
+            cat compliance_report.json || true
+            echo '{"compliant": false, "summary": "Compliance check script failed", "issues": ["Script error - check workflow logs"], "tickets_found": []}' > compliance_report.json
+          fi
+
+          # Validate JSON
+          if ! jq -e . compliance_report.json > /dev/null 2>&1; then
+            echo "Invalid JSON in compliance_report.json:"
+            cat compliance_report.json
+            echo '{"compliant": false, "summary": "Invalid JSON output from compliance script", "issues": ["Script produced invalid JSON"], "tickets_found": []}' > compliance_report.json
+          fi
 
           # Extract results for outputs
           COMPLIANT=$(jq -r '.compliant' compliance_report.json)
@@ -128,7 +146,22 @@ jobs:
           github-token: ${{ secrets.REPO_TOKEN }}
           script: |
             const fs = require('fs');
-            const report = JSON.parse(fs.readFileSync('compliance_report.json', 'utf8'));
+            let report;
+            try {
+              const content = fs.readFileSync('compliance_report.json', 'utf8');
+              if (!content || content.trim() === '') {
+                throw new Error('compliance_report.json is empty');
+              }
+              report = JSON.parse(content);
+            } catch (e) {
+              console.error('Failed to parse compliance_report.json:', e.message);
+              report = {
+                compliant: false,
+                summary: 'Failed to parse compliance report: ' + e.message,
+                issues: ['Check workflow logs for details'],
+                tickets_found: []
+              };
+            }
 
             const icon = report.compliant ? ':white_check_mark:' : ':x:';
             const status = report.compliant ? 'Passed' : 'Failed';
