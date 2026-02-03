@@ -226,6 +226,31 @@ jobs:
               }
             }
 
+            if (report.unimplemented_tickets && report.unimplemented_tickets.length > 0) {
+              body += `### :rotating_light: Unimplemented Tickets\n`;
+              body += `The following tickets are listed in the PR description but have **NO corresponding code changes**:\n\n`;
+              report.unimplemented_tickets.forEach(t => {
+                body += `- :x: \`${t}\`\n`;
+              });
+              body += '\n';
+              body += `**This is a compliance violation.** Either:\n`;
+              body += `1. Remove these tickets from the PR description, OR\n`;
+              body += `2. Implement the changes described in these tickets\n\n`;
+              body += `<details>\n<summary>🤖 Prompt for your coding agent</summary>\n\n`;
+              body += `\`\`\`\n`;
+              body += `The SOC2 compliance check found tickets listed in the PR that have no code changes.\n`;
+              body += `Please either:\n`;
+              body += `1. Remove these tickets from the Linear Tickets table in the PR description\n`;
+              body += `2. Or implement the changes required by these tickets\n`;
+              body += `\n`;
+              body += `Unimplemented tickets:\n`;
+              report.unimplemented_tickets.forEach(t => {
+                body += `- ${t}\n`;
+              });
+              body += `\`\`\`\n\n`;
+              body += `</details>\n\n`;
+            }
+
             if (report.spec_coverage) {
               body += `### Spec Coverage\n`;
               body += `${report.spec_coverage}\n\n`;

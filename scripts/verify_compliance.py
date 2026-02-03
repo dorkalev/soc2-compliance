@@ -454,6 +454,11 @@ DO NOT include these in "unspecced_changes":
    - NOT mentioned in specs or issue files
 4. **Incomplete Implementation**: Are there spec items NOT implemented in the code?
 5. **Scope Creep**: Does the PR include changes beyond the ticket scope?
+6. **CRITICAL - Unimplemented Tickets**: For EACH ticket ID in the PR description's Linear Tickets table:
+   - Check if the code changes actually implement that ticket
+   - A ticket is "implemented" if files in the diff relate to its description/requirements
+   - If a ticket is listed but NO code changes relate to it, flag it as "unimplemented_tickets"
+   - This prevents false audit trails from tickets added by mistake
 
 ## CRITICAL RULES FOR "unspecced_changes"
 
@@ -462,6 +467,17 @@ DO NOT include these in "unspecced_changes":
 - Image files, CSS files, and other static assets listed in Key Changes are documented
 - Return an EMPTY array [] for unspecced_changes if all files are documented
 - Only include files that genuinely have NO mention in any documentation
+
+## CRITICAL RULES FOR "unimplemented_tickets"
+
+- For EACH ticket in the PR's "Linear Tickets" table, verify code changes exist for it
+- Check both the ticket description AND the Key Changes table's "Ticket" column
+- If a ticket appears in Linear Tickets table but:
+  - Has NO files listed in Key Changes with that ticket ID, AND
+  - Has NO code changes that match its description/requirements
+  - Then it is UNIMPLEMENTED and must be flagged
+- Tickets that are "merged from staging" or explicitly marked as from another PR are OK
+- Return the ticket ID and reason for each unimplemented ticket
 
 ## Output
 
@@ -472,6 +488,7 @@ Respond with a JSON object (no markdown, just raw JSON):
     "tickets_found": ["list", "of", "ticket", "ids"],
     "issues": ["list of compliance issues found"],
     "unspecced_changes": ["ONLY files not mentioned anywhere - empty array if all documented"],
+    "unimplemented_tickets": ["TICKET-123: reason why no code implements this ticket"],
     "unimplemented_specs": ["spec items not found in the code"],
     "spec_coverage": "Brief description of how well specs cover the changes",
     "recommendations": ["suggestions for improving compliance"]
@@ -480,6 +497,7 @@ Respond with a JSON object (no markdown, just raw JSON):
 Be strict but fair. Minor documentation changes and test files don't need specs.
 Config changes and dependency updates should still reference a ticket.
 If all changed files are documented in the PR body, return "compliant": true and "unspecced_changes": [].
+If all tickets in the PR have corresponding code changes, return "unimplemented_tickets": [].
 """
 
     try:
@@ -533,6 +551,7 @@ def main():
         "tickets_found": [],
         "issues": [],
         "unspecced_changes": [],
+        "unimplemented_tickets": [],
         "unimplemented_specs": [],
         "spec_coverage": "",
         "recommendations": [],
@@ -597,6 +616,15 @@ def main():
         report["compliant"] = False
         if "Unspecced changes detected" not in report.get("summary", ""):
             report["summary"] = "Unspecced changes detected: " + report.get("summary", "")
+    elif report.get("unimplemented_tickets"):
+        # CRITICAL: Tickets listed in PR but not implemented = false audit trail
+        report["compliant"] = False
+        if "Unimplemented tickets" not in report.get("summary", ""):
+            report["summary"] = "Unimplemented tickets in PR description: " + report.get("summary", "")
+        report["issues"].append(
+            "PR lists tickets that have no corresponding code changes. "
+            "Remove these tickets from the PR description or implement them."
+        )
     elif not ticket_ids and FAIL_ON_MISSING_TICKET:
         report["compliant"] = False
 
