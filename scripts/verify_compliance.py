@@ -111,14 +111,21 @@ def read_local_files(ticket_ids: list[str], repo_path: str) -> dict:
             for pattern in [f"{ticket_id}.md", f"{ticket_id.lower()}.md", f"{ticket_id.replace('-', '_')}.md"]:
                 issue_file = issues_dir / pattern
                 if issue_file.exists():
-                    result["issues"][ticket_id] = issue_file.read_text()
+                    try:
+                        result["issues"][ticket_id] = issue_file.read_text(errors="replace")
+                    except Exception as e:
+                        print(f"Warning: Could not read issue file {issue_file}: {e}", file=sys.stderr)
                     break
 
     # Read spec files - include all that might be relevant
     specs_dir = repo / SPECS_PATH
     if specs_dir.exists():
         for spec_file in specs_dir.glob("**/*.md"):
-            content = spec_file.read_text()
+            try:
+                content = spec_file.read_text(errors="replace")
+            except Exception as e:
+                print(f"Warning: Could not read spec file {spec_file}: {e}", file=sys.stderr)
+                continue
             # Check if spec mentions any of our tickets
             for ticket_id in ticket_ids:
                 if ticket_id.lower() in content.lower():
@@ -132,7 +139,10 @@ def read_local_files(ticket_ids: list[str], repo_path: str) -> dict:
                 for spec_file in specs_dir.glob(f"**/{pattern}.md"):
                     rel_path = spec_file.relative_to(repo)
                     if str(rel_path) not in result["specs"]:
-                        result["specs"][str(rel_path)] = spec_file.read_text()
+                        try:
+                            result["specs"][str(rel_path)] = spec_file.read_text(errors="replace")
+                        except Exception as e:
+                            print(f"Warning: Could not read spec file {spec_file}: {e}", file=sys.stderr)
 
     return result
 
