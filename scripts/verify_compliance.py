@@ -706,11 +706,12 @@ def main():
     # 5b. Get tickets from actual branch commits (excluding merge commits)
     branch_commit_tickets = get_branch_commit_tickets(TARGET_REPO)
 
-    # 5c. Detect tickets from merge commits (in PR body but not in branch commits)
+    # 5c. Detect tickets in PR body but not in branch commits
+    # This is informational - tickets don't need to be in commit messages
     merge_commit_tickets = [t for t in ticket_ids if t not in branch_commit_tickets]
     if merge_commit_tickets:
         report["merge_commit_tickets"] = merge_commit_tickets
-        print(f"Warning: Tickets from merge commits detected: {merge_commit_tickets}", file=sys.stderr)
+        print(f"Note: Tickets in PR but not in commits: {merge_commit_tickets}", file=sys.stderr)
 
     # 6. Handle large diffs
     if len(diff) > MAX_DIFF_CHARS:
@@ -771,12 +772,15 @@ def main():
         )
 
     # Check 6: Tickets from merge commits (PR lists tickets with no branch commits)
+    # NOTE: This is a warning only, not a blocker. Tickets can legitimately be in PR
+    # body without being in commit messages (e.g., small fixes, workflow changes).
+    # The warning helps identify cases where tickets from merged branches are inherited.
     if report.get("merge_commit_tickets"):
-        violations.append("merge_commit_tickets")
+        # Don't add to violations - just a warning
         merge_tickets = report["merge_commit_tickets"]
-        report["issues"].append(
-            f"PR references tickets from merge commits (not from work on this branch): {', '.join(merge_tickets)}. "
-            "These tickets were already merged via their own PRs. Remove them from the Linear Tickets table."
+        report["recommendations"].append(
+            f"Note: Tickets {', '.join(merge_tickets)} are in PR body but not in commit messages. "
+            "This is OK if these are your primary tickets. If they came from merging another branch, consider removing them."
         )
 
     # Set compliance status based on violations
