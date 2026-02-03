@@ -73,6 +73,8 @@ jobs:
     steps:
       - name: Checkout compliance tools
         uses: actions/checkout@v4
+        with:
+          repository: dorkalev/soc2-compliance
 
       - name: Checkout target repository
         uses: actions/checkout@v4
