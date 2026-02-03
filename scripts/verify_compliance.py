@@ -50,7 +50,7 @@ def fetch_linear_ticket(ticket_id: str) -> dict | None:
     if not LINEAR_API_KEY:
         return None
 
-    # Use searchIssues to find by identifier (e.g., "BOL-410")
+    # Use searchIssues to find by identifier (e.g., "PROJ-123")
     query = """
     query SearchIssue($term: String!) {
         searchIssues(term: $term, first: 5) {
