@@ -366,18 +366,23 @@ def generate_fix_suggestions(
     suggested_table = "| File | Change | Ticket | Description |\n|------|--------|--------|-------------|\n"
     suggested_table += "\n".join(table_rows)
 
-    # Build agent prompt
-    agent_prompt = f"""Add the following unspecced files to the PR description's "Key Changes" table.
+    # Build concise agent prompt that references Forge command
+    files_csv = ",".join(all_unspecced_files[:10])
+    agent_prompt = f"""SOC2 compliance check failed. Run this command to fix:
 
-Files to document:
-{chr(10).join(f"- {f}" for f in all_unspecced_files)}
+/forge:fix-compliance --files "{files_csv}"
 
-For each file:
-1. Determine if it was Added or Modified
-2. Link it to ticket {primary_ticket} (or create a new ticket if it's a separate concern)
-3. Write a brief description of what it does
+Or for a full compliance rebuild:
 
-Update the PR body using: gh pr edit <number> --body-file <updated_body.md>"""
+/forge:fix-compliance
+
+This will:
+1. Add undocumented files to the PR's Key Changes table
+2. Map each file to the appropriate Linear ticket ({primary_ticket})
+3. Update the PR description with proper audit traceability
+
+Files needing documentation:
+{chr(10).join(f"- {f}" for f in all_unspecced_files)}"""
 
     return {
         "suggested_table_rows": table_rows,
