@@ -15,9 +15,14 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import httpx
+
+# Retry configuration for API calls
+MAX_RETRIES = 5
+INITIAL_BACKOFF = 2  # seconds
 
 # Configuration from environment
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -571,47 +576,71 @@ Respond with JSON only (no markdown):
 5. Exceptions: test files, minor docs, and config don't need full spec coverage
 """
 
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt,
-        )
+    # Retry loop with exponential backoff for rate limiting
+    last_error = None
+    response = None
 
-        # Parse JSON from response
-        response_text = response.text.strip()
-
-        # Handle markdown code blocks
-        if response_text.startswith("```"):
-            lines = response_text.split("\n")
-            response_text = "\n".join(lines[1:-1])
-
-        result = json.loads(response_text)
-
-        # Generate fix suggestions if there are unspecced changes
-        if result.get("unspecced_changes"):
-            ticket_ids = result.get("tickets_found", [])
-            suggestions = generate_fix_suggestions(
-                result["unspecced_changes"],
-                changed_files,
-                ticket_ids,
-                pr_body,
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt,
             )
-            result["fix_suggestions"] = suggestions
 
-        return result
-    except json.JSONDecodeError as e:
-        return {
-            "compliant": False,
-            "summary": f"Failed to parse Gemini response: {e}",
-            "issues": ["Gemini response was not valid JSON"],
-            "raw_response": response.text if "response" in dir() else "No response",
-        }
-    except Exception as e:
-        return {
-            "compliant": False,
-            "summary": f"Gemini API error: {e}",
-            "issues": [str(e)],
-        }
+            # Parse JSON from response
+            response_text = response.text.strip()
+
+            # Handle markdown code blocks
+            if response_text.startswith("```"):
+                lines = response_text.split("\n")
+                response_text = "\n".join(lines[1:-1])
+
+            result = json.loads(response_text)
+
+            # Generate fix suggestions if there are unspecced changes
+            if result.get("unspecced_changes"):
+                ticket_ids = result.get("tickets_found", [])
+                suggestions = generate_fix_suggestions(
+                    result["unspecced_changes"],
+                    changed_files,
+                    ticket_ids,
+                    pr_body,
+                )
+                result["fix_suggestions"] = suggestions
+
+            return result
+
+        except json.JSONDecodeError as e:
+            return {
+                "compliant": False,
+                "summary": f"Failed to parse Gemini response: {e}",
+                "issues": ["Gemini response was not valid JSON"],
+                "raw_response": response.text if response else "No response",
+            }
+        except Exception as e:
+            last_error = e
+            error_str = str(e).lower()
+
+            # Check for rate limiting (429) or resource exhausted errors
+            if "429" in str(e) or "resource_exhausted" in error_str or "rate" in error_str:
+                wait_time = INITIAL_BACKOFF ** (attempt + 1)
+                print(f"Rate limited (attempt {attempt + 1}/{MAX_RETRIES}), waiting {wait_time}s...", file=sys.stderr)
+                time.sleep(wait_time)
+                continue
+
+            # For other errors, don't retry
+            return {
+                "compliant": False,
+                "summary": f"Gemini API error: {e}",
+                "issues": [str(e)],
+            }
+
+    # All retries exhausted
+    return {
+        "compliant": False,
+        "summary": f"Gemini API error after {MAX_RETRIES} retries: {last_error}",
+        "issues": [f"Rate limited - exceeded {MAX_RETRIES} retry attempts"],
+    }
 
 
 def main():
