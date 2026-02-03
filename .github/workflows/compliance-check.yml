@@ -311,6 +311,14 @@ jobs:
               });
             }
 
+      - name: Upload compliance report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-report-${{ inputs.pr_number }}
+          path: compliance_report.json
+          retention-days: 90
+
       - name: Fail if not compliant
         if: steps.check.outputs.compliant == 'false'
         run: |

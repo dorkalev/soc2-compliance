@@ -1,0 +1,106 @@
+name: Archive Compliance Report
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: "Pull request number"
+        required: true
+        type: string
+      pr_title:
+        description: "Pull request title"
+        required: true
+        type: string
+      repo:
+        description: "Repository (owner/name)"
+        required: true
+        type: string
+      target_branch:
+        description: "Branch to archive to (e.g., main, staging)"
+        required: true
+        type: string
+      archive_path:
+        description: "Path for archive files"
+        required: false
+        type: string
+        default: "compliance"
+      compliance_report:
+        description: "Compliance report JSON string"
+        required: true
+        type: string
+    secrets:
+      REPO_TOKEN:
+        required: true
+    outputs:
+      archive_url:
+        description: "URL to the archived compliance report"
+        value: ${{ jobs.archive.outputs.archive_url }}
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    outputs:
+      archive_url: ${{ steps.commit.outputs.archive_url }}
+
+    steps:
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repo }}
+          token: ${{ secrets.REPO_TOKEN }}
+          ref: ${{ inputs.target_branch }}
+
+      - name: Create compliance archive
+        id: archive
+        run: |
+          # Create archive directory
+          mkdir -p ${{ inputs.archive_path }}
+
+          # Generate filename with timestamp
+          TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
+          FILENAME="pr-${{ inputs.pr_number }}-${TIMESTAMP}.json"
+          FILEPATH="${{ inputs.archive_path }}/${FILENAME}"
+
+          # Parse and enhance the compliance report
+          echo '${{ inputs.compliance_report }}' | jq --arg pr "${{ inputs.pr_number }}" \
+            --arg title "${{ inputs.pr_title }}" \
+            --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg branch "${{ inputs.target_branch }}" \
+            '. + {
+              archived_at: $ts,
+              pr_number: $pr,
+              pr_title: $title,
+              target_branch: $branch
+            }' > "$FILEPATH"
+
+          echo "filepath=$FILEPATH" >> $GITHUB_OUTPUT
+          echo "filename=$FILENAME" >> $GITHUB_OUTPUT
+
+      - name: Commit and push archive
+        id: commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add ${{ steps.archive.outputs.filepath }}
+
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+
+          git commit -m "compliance: archive PR #${{ inputs.pr_number }} report
+
+          Automated compliance archive for SOC2 audit trail.
+          PR: #${{ inputs.pr_number }}
+          Title: ${{ inputs.pr_title }}"
+
+          git push
+
+          # Build the GitHub URL to the file
+          REPO_URL="https://github.com/${{ inputs.repo }}"
+          ARCHIVE_URL="${REPO_URL}/blob/${{ inputs.target_branch }}/${{ steps.archive.outputs.filepath }}"
+
+          echo "archive_url=$ARCHIVE_URL" >> $GITHUB_OUTPUT
+          echo "Archived to: $ARCHIVE_URL"

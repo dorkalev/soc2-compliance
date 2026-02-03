@@ -1,0 +1,153 @@
+# Example: Post-merge workflow that archives compliance reports
+#
+# Add this to your repository's .github/workflows/ directory
+# This runs AFTER a PR is merged and:
+# 1. Downloads the compliance report artifact from the PR check
+# 2. Archives it to git (permanent audit trail)
+# 3. Posts to Slack with a link to the archive
+#
+# Prerequisites:
+# - SLACK_WEBHOOK_URL secret configured (optional)
+# - soc2-compliance workflow must run on PRs first
+
+name: Post-Merge Compliance Archive
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main, staging]
+
+jobs:
+  archive:
+    # Only run if PR was merged (not just closed)
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    outputs:
+      archive_url: ${{ steps.commit.outputs.archive_url }}
+
+    steps:
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+
+      - name: Download compliance report artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: compliance-report-${{ github.event.pull_request.number }}
+          path: ./artifact
+        continue-on-error: true
+
+      - name: Create compliance archive
+        id: archive
+        run: |
+          mkdir -p compliance
+
+          PR_NUM="${{ github.event.pull_request.number }}"
+          TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
+          FILENAME="pr-${PR_NUM}-${TIMESTAMP}.json"
+          FILEPATH="compliance/${FILENAME}"
+
+          # Use downloaded artifact or create minimal record
+          if [ -f "./artifact/compliance_report.json" ]; then
+            # Enhance with metadata
+            jq --arg pr "$PR_NUM" \
+               --arg title "${{ github.event.pull_request.title }}" \
+               --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+               --arg branch "${{ github.event.pull_request.base.ref }}" \
+               --arg author "${{ github.event.pull_request.user.login }}" \
+               --arg pr_url "${{ github.event.pull_request.html_url }}" \
+               '. + {
+                 archived_at: $ts,
+                 pr_number: ($pr | tonumber),
+                 pr_title: $title,
+                 pr_url: $pr_url,
+                 target_branch: $branch,
+                 merged_by: $author
+               }' ./artifact/compliance_report.json > "$FILEPATH"
+          else
+            # No artifact found - create minimal record
+            echo "Warning: No compliance artifact found, creating minimal record"
+            cat > "$FILEPATH" << EOF
+          {
+            "archived_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "pr_number": $PR_NUM,
+            "pr_title": "${{ github.event.pull_request.title }}",
+            "pr_url": "${{ github.event.pull_request.html_url }}",
+            "target_branch": "${{ github.event.pull_request.base.ref }}",
+            "merged_by": "${{ github.event.pull_request.user.login }}",
+            "note": "Compliance report artifact not found - PR may predate compliance workflow"
+          }
+          EOF
+          fi
+
+          echo "filepath=$FILEPATH" >> $GITHUB_OUTPUT
+          echo "filename=$FILENAME" >> $GITHUB_OUTPUT
+
+      - name: Commit and push archive
+        id: commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add ${{ steps.archive.outputs.filepath }}
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+            echo "archive_url=${{ github.event.pull_request.html_url }}" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          git commit -m "compliance: archive PR #${{ github.event.pull_request.number }}
+
+          Automated SOC2 compliance archive.
+          PR: ${{ github.event.pull_request.html_url }}
+          Title: ${{ github.event.pull_request.title }}
+          Merged by: ${{ github.event.pull_request.user.login }}"
+
+          git push
+
+          # Build URL to the archived file
+          ARCHIVE_URL="https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.base.ref }}/${{ steps.archive.outputs.filepath }}"
+          echo "archive_url=$ARCHIVE_URL" >> $GITHUB_OUTPUT
+
+  notify-slack:
+    needs: archive
+    if: vars.SLACK_WEBHOOK_URL != '' || secrets.SLACK_WEBHOOK_URL != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post to Slack
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          PR_NUM="${{ github.event.pull_request.number }}"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_URL="${{ github.event.pull_request.html_url }}"
+          AUTHOR="${{ github.event.pull_request.user.login }}"
+          BASE="${{ github.event.pull_request.base.ref }}"
+          ARCHIVE_URL="${{ needs.archive.outputs.archive_url }}"
+
+          curl -X POST "$SLACK_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d @- << 'EOF'
+          {
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "✅ *<'"${PR_URL}"'|PR #'"${PR_NUM}"'>* merged to `'"${BASE}"'`\n'"${PR_TITLE}"'"
+                }
+              },
+              {
+                "type": "context",
+                "elements": [
+                  {
+                    "type": "mrkdwn",
+                    "text": "by @'"${AUTHOR}"' • <'"${ARCHIVE_URL}"'|📋 Compliance Report>"
+                  }
+                ]
+              }
+            ]
+          }
+          EOF
