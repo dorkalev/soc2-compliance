@@ -1,14 +1,9 @@
-# Example: Post-merge workflow that archives compliance reports
+# Post-merge workflow that archives compliance reports to git
 #
-# Add this to your repository's .github/workflows/ directory
-# This runs AFTER a PR is merged and:
-# 1. Downloads the compliance report artifact from the PR check
-# 2. Archives it to git (permanent audit trail)
-# 3. Posts to Slack with a link to the archive
+# Creates permanent audit trail at: compliance/pr-{num}-{ticket}-{slug}-{date}.json
+# Posts to Slack with link to the archived report
 #
-# Prerequisites:
-# - SLACK_WEBHOOK_URL secret configured (optional)
-# - soc2-compliance workflow must run on PRs first
+# Copy this to your repo's .github/workflows/ directory
 
 name: Post-Merge Compliance Archive
 
@@ -44,26 +39,47 @@ jobs:
           mkdir -p compliance
 
           PR_NUM="${{ github.event.pull_request.number }}"
-          TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
-          FILENAME="pr-${PR_NUM}-${TIMESTAMP}.json"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          DATE=$(date -u +%Y%m%d)
+
+          # Extract ticket ID from title (e.g., "BOL-396: Description" -> "BOL-396")
+          TICKET=$(echo "$PR_TITLE" | grep -oE '^[A-Z]+-[0-9]+' | head -1)
+          if [ -z "$TICKET" ]; then
+            TICKET="no-ticket"
+          fi
+
+          # Create slug from title (remove ticket prefix, lowercase, replace spaces with dashes)
+          SLUG=$(echo "$PR_TITLE" | sed -E 's/^[A-Z]+-[0-9]+:?\s*//' | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-' | head -c 40)
+          if [ -z "$SLUG" ]; then
+            SLUG="merge"
+          fi
+
+          # Build filename: pr-106-BOL-396-christians-bag-of-bugs-20260203.json
+          FILENAME="pr-${PR_NUM}-${TICKET}-${SLUG}-${DATE}.json"
           FILEPATH="compliance/${FILENAME}"
+
+          echo "Creating archive: $FILEPATH"
 
           # Use downloaded artifact or create minimal record
           if [ -f "./artifact/compliance_report.json" ]; then
             # Enhance with metadata
             jq --arg pr "$PR_NUM" \
-               --arg title "${{ github.event.pull_request.title }}" \
+               --arg title "$PR_TITLE" \
+               --arg ticket "$TICKET" \
                --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
                --arg branch "${{ github.event.pull_request.base.ref }}" \
                --arg author "${{ github.event.pull_request.user.login }}" \
                --arg pr_url "${{ github.event.pull_request.html_url }}" \
+               --arg head_sha "${{ github.event.pull_request.head.sha }}" \
                '. + {
                  archived_at: $ts,
                  pr_number: ($pr | tonumber),
                  pr_title: $title,
+                 primary_ticket: $ticket,
                  pr_url: $pr_url,
                  target_branch: $branch,
-                 merged_by: $author
+                 merged_by: $author,
+                 head_sha: $head_sha
                }' ./artifact/compliance_report.json > "$FILEPATH"
           else
             # No artifact found - create minimal record
@@ -72,10 +88,12 @@ jobs:
           {
             "archived_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "pr_number": $PR_NUM,
-            "pr_title": "${{ github.event.pull_request.title }}",
+            "pr_title": "$PR_TITLE",
+            "primary_ticket": "$TICKET",
             "pr_url": "${{ github.event.pull_request.html_url }}",
             "target_branch": "${{ github.event.pull_request.base.ref }}",
             "merged_by": "${{ github.event.pull_request.user.login }}",
+            "head_sha": "${{ github.event.pull_request.head.sha }}",
             "note": "Compliance report artifact not found - PR may predate compliance workflow"
           }
           EOF
@@ -113,13 +131,17 @@ jobs:
 
   notify-slack:
     needs: archive
-    if: vars.SLACK_WEBHOOK_URL != '' || secrets.SLACK_WEBHOOK_URL != ''
     runs-on: ubuntu-latest
     steps:
       - name: Post to Slack
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "SLACK_WEBHOOK_URL not configured, skipping"
+            exit 0
+          fi
+
           PR_NUM="${{ github.event.pull_request.number }}"
           PR_TITLE="${{ github.event.pull_request.title }}"
           PR_URL="${{ github.event.pull_request.html_url }}"
@@ -129,25 +151,23 @@ jobs:
 
           curl -X POST "$SLACK_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
-            -d @- << 'EOF'
-          {
-            "blocks": [
-              {
-                "type": "section",
-                "text": {
-                  "type": "mrkdwn",
-                  "text": "✅ *<'"${PR_URL}"'|PR #'"${PR_NUM}"'>* merged to `'"${BASE}"'`\n'"${PR_TITLE}"'"
-                }
-              },
-              {
-                "type": "context",
-                "elements": [
-                  {
-                    "type": "mrkdwn",
-                    "text": "by @'"${AUTHOR}"' • <'"${ARCHIVE_URL}"'|📋 Compliance Report>"
+            -d "{
+              \"blocks\": [
+                {
+                  \"type\": \"section\",
+                  \"text\": {
+                    \"type\": \"mrkdwn\",
+                    \"text\": \"✅ *<${PR_URL}|PR #${PR_NUM}>* merged to \`${BASE}\`\n${PR_TITLE}\"
                   }
-                ]
-              }
-            ]
-          }
-          EOF
+                },
+                {
+                  \"type\": \"context\",
+                  \"elements\": [
+                    {
+                      \"type\": \"mrkdwn\",
+                      \"text\": \"by @${AUTHOR} • <${ARCHIVE_URL}|📋 Compliance Report>\"
+                    }
+                  ]
+                }
+              ]
+            }"
