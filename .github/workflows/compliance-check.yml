@@ -198,6 +198,17 @@ jobs:
               body += `**Fix:** Remove these ticket IDs from the PR description or create them in Linear.\n\n`;
             }
 
+            // Merge commit tickets: Tickets in PR body but not in branch commits
+            if (report.merge_commit_tickets && report.merge_commit_tickets.length > 0) {
+              body += `### :warning: Tickets From Merge Commits\n`;
+              body += `These tickets are in the PR but have **no commits on this branch** (likely from merging staging/main):\n\n`;
+              report.merge_commit_tickets.forEach(t => {
+                body += `- :yellow_circle: \`${t}\`\n`;
+              });
+              body += '\n';
+              body += `**Fix:** Remove these tickets from the Linear Tickets table—they were already merged via their own PRs.\n\n`;
+            }
+
             // Code → PR: Unspecced changes
             if (report.unspecced_changes && report.unspecced_changes.length > 0) {
               body += `### :warning: Unspecced Changes (Code → PR)\n`;

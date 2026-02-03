@@ -192,6 +192,36 @@ def get_changed_files(repo_path: str) -> list[str]:
         return []
 
 
+def get_branch_commit_tickets(repo_path: str) -> set[str]:
+    """
+    Extract ticket IDs from non-merge commits on this branch.
+
+    This excludes tickets that came from merge commits (e.g., merging staging
+    into the feature branch), ensuring we only track tickets for work actually
+    done on this branch.
+    """
+    try:
+        # Get commit messages from non-merge commits only
+        # --no-merges excludes merge commits
+        # --first-parent follows only the first parent (the branch itself)
+        result = subprocess.run(
+            [
+                "git", "log", f"origin/{BASE_BRANCH}..HEAD",
+                "--no-merges",
+                "--format=%s%n%b",  # Subject and body
+            ],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        commit_text = result.stdout
+        return set(extract_ticket_ids(commit_text))
+    except Exception as e:
+        print(f"Warning: Could not get branch commit tickets: {e}", file=sys.stderr)
+        return set()
+
+
 def summarize_large_diff(diff: str, repo_path: str) -> str:
     """Summarize a large diff by file."""
     changed_files = get_changed_files(repo_path)
@@ -556,6 +586,7 @@ def main():
         "issues": [],
         "invalid_tickets": [],
         "unimplemented_tickets": [],
+        "merge_commit_tickets": [],
         "unspecced_changes": [],
         "missing_documentation": [],
         "unimplemented_specs": [],
@@ -595,6 +626,15 @@ def main():
 
     # 5. Get changed files list
     changed_files = get_changed_files(TARGET_REPO)
+
+    # 5b. Get tickets from actual branch commits (excluding merge commits)
+    branch_commit_tickets = get_branch_commit_tickets(TARGET_REPO)
+
+    # 5c. Detect tickets from merge commits (in PR body but not in branch commits)
+    merge_commit_tickets = [t for t in ticket_ids if t not in branch_commit_tickets]
+    if merge_commit_tickets:
+        report["merge_commit_tickets"] = merge_commit_tickets
+        print(f"Warning: Tickets from merge commits detected: {merge_commit_tickets}", file=sys.stderr)
 
     # 6. Handle large diffs
     if len(diff) > MAX_DIFF_CHARS:
@@ -652,6 +692,15 @@ def main():
         violations.append("no_tickets")
         report["issues"].append(
             f"PR must reference at least one ticket matching pattern: {TICKET_PATTERN}"
+        )
+
+    # Check 6: Tickets from merge commits (PR lists tickets with no branch commits)
+    if report.get("merge_commit_tickets"):
+        violations.append("merge_commit_tickets")
+        merge_tickets = report["merge_commit_tickets"]
+        report["issues"].append(
+            f"PR references tickets from merge commits (not from work on this branch): {', '.join(merge_tickets)}. "
+            "These tickets were already merged via their own PRs. Remove them from the Linear Tickets table."
         )
 
     # Set compliance status based on violations
