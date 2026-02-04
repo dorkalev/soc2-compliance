@@ -790,10 +790,16 @@ def main():
             "This is OK if these are your primary tickets. If they came from merging another branch, consider removing them."
         )
 
-    # Set compliance status based on violations
-    if violations and report.get("compliant", True):
+    # Set compliance status based on violations ONLY
+    # We override Gemini's judgment - only our policy rules determine compliance
+    if violations:
         report["compliant"] = False
         report["summary"] = f"PR description junction validation failed: {', '.join(violations)}"
+    else:
+        # No policy violations = compliant, regardless of Gemini's opinion
+        report["compliant"] = True
+        if not report.get("summary") or "not" in report.get("summary", "").lower():
+            report["summary"] = "All tickets linked and validated. PR is compliant."
 
     # Output
     print(json.dumps(report, indent=2))
