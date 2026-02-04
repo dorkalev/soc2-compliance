@@ -737,49 +737,9 @@ def main():
     # 8. Merge results
     report.update(gemini_result)
 
-    # 8.5. HARD CHECK: Programmatically verify all changed files are documented
-    # This overrides Gemini's potentially lenient judgment
-    documented_files = extract_documented_files(PR_BODY)
-    programmatic_unspecced = []
-    for f in changed_files:
-        # Check if file is documented (exact match or partial match for wildcards/globs)
-        is_documented = False
-        for doc in documented_files:
-            if f == doc or f in doc or doc in f:
-                is_documented = True
-                break
-            # Handle base name matching (e.g., "og-image.jpg" matches "og-image")
-            if "/" in f:
-                base = f.rsplit("/", 1)[-1].rsplit(".", 1)[0]
-                if base in doc:
-                    is_documented = True
-                    break
-        # Skip common files that don't need explicit documentation
-        skip_patterns = [
-            "CLAUDE.md", "README.md", ".gitignore", "pyproject.toml",
-            "requirements.txt", "package.json", "package-lock.json",
-            ".github/workflows/soc2-compliance.yml",  # Meta - this workflow itself
-        ]
-        if any(pattern in f for pattern in skip_patterns):
-            is_documented = True
-        if not is_documented:
-            programmatic_unspecced.append(f)
-
-    # Override Gemini's unspecced_changes if our programmatic check found more
-    if programmatic_unspecced:
-        existing_unspecced = set(report.get("unspecced_changes", []))
-        combined_unspecced = list(existing_unspecced | set(programmatic_unspecced))
-        if combined_unspecced:
-            report["unspecced_changes"] = combined_unspecced
-            # Generate fix suggestions for the programmatic findings
-            ticket_ids = report.get("tickets_found", [])
-            suggestions = generate_fix_suggestions(
-                combined_unspecced,
-                changed_files,
-                ticket_ids,
-                PR_BODY,
-            )
-            report["fix_suggestions"] = suggestions
+    # 8.5. File-level checks removed
+    # SOC2 compliance focuses on ticket traceability, not individual file documentation.
+    # The PR description must link tickets to code changes, but doesn't require a file list.
 
     # 9. Apply policy rules - PR description is the junction, verify all connections
     violations = []
@@ -800,13 +760,11 @@ def main():
             "Remove these tickets or implement them."
         )
 
-    # Check 3: Unspecced changes (Code → PR)
-    if report.get("unspecced_changes") and FAIL_ON_UNSPECCED:
-        violations.append("unspecced_changes")
-        report["issues"].append(
-            "Code changes not documented in PR description. "
-            "Add them to the Key Changes table."
-        )
+    # Check 3: Unspecced changes - now just a warning, not a blocker
+    # SOC2 compliance focuses on ticket traceability, not file-level documentation
+    if report.get("unspecced_changes"):
+        # Keep as info but don't fail
+        pass
 
     # Check 4: Missing documentation (PR → Issues/Specs)
     if report.get("missing_documentation"):

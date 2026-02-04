@@ -201,27 +201,12 @@ jobs:
               problems.forEach(p => body += `- ${p}\n`);
               body += '\n';
 
-              // Unspecced changes - the main issue
-              if (report.unspecced_changes?.length > 0) {
-                body += `### Undocumented Files\n\n`;
-                body += `These files were changed but aren't documented in the PR's Key Changes table:\n\n`;
-                report.unspecced_changes.slice(0, 15).forEach(c => {
-                  body += `- \`${c}\`\n`;
-                });
-                if (report.unspecced_changes.length > 15) {
-                  body += `- ... and ${report.unspecced_changes.length - 15} more\n`;
-                }
-                body += '\n';
-              }
-
               // THE FIX - one command
               body += `---\n\n`;
               body += `## 🔧 How to Fix\n\n`;
               body += `Run this command in Claude Code:\n\n`;
               body += `\`\`\`\n/forge:fix-compliance\n\`\`\`\n\n`;
-              body += `Or if you have specific files to add:\n\n`;
-              body += `\`\`\`\n/forge:fix-compliance --files "${report.unspecced_changes?.slice(0, 5).join(',') || ''}"\n\`\`\`\n\n`;
-              body += `This will update your PR to document all code changes with proper ticket traceability.\n\n`;
+              body += `This will ensure all tickets are properly linked in your PR.\n\n`;
 
               // Additional context for specific issues
               if (report.merge_commit_tickets?.length > 0) {
