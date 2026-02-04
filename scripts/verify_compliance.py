@@ -760,11 +760,15 @@ def main():
             "Remove these tickets or implement them."
         )
 
-    # Check 3: Unspecced changes - now just a warning, not a blocker
-    # SOC2 compliance focuses on ticket traceability, not file-level documentation
-    if report.get("unspecced_changes"):
-        # Keep as info but don't fail
-        pass
+    # Check 3: Unspecced changes (Code not covered by any ticket)
+    # Gemini flags code that doesn't seem related to the listed tickets.
+    # The fix is to add a ticket covering that work, NOT to add a file list.
+    if report.get("unspecced_changes") and FAIL_ON_UNSPECCED:
+        violations.append("unspecced_changes")
+        report["issues"].append(
+            "Code changes found that don't appear to be covered by any ticket. "
+            "Add a ticket that covers this work, or expand an existing ticket's scope."
+        )
 
     # Check 4: Missing documentation (PR → Issues/Specs)
     if report.get("missing_documentation"):

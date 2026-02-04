@@ -186,7 +186,7 @@ jobs:
               const problems = [];
 
               if (report.unspecced_changes?.length > 0) {
-                problems.push(`**Undocumented code changes** - ${report.unspecced_changes.length} files changed but not in PR description`);
+                problems.push(`**Code not covered by tickets** - Changes found that don't match any listed ticket`);
               }
               if (report.invalid_tickets?.length > 0) {
                 problems.push(`**Invalid tickets** - ${report.invalid_tickets.join(', ')} not found in Linear`);
@@ -206,7 +206,7 @@ jobs:
               body += `## 🔧 How to Fix\n\n`;
               body += `Run this command in Claude Code:\n\n`;
               body += `\`\`\`\n/forge:fix-compliance\n\`\`\`\n\n`;
-              body += `This will ensure all tickets are properly linked in your PR.\n\n`;
+              body += `This will ensure all code changes are covered by tickets.\n\n`;
 
               // Additional context for specific issues
               if (report.merge_commit_tickets?.length > 0) {
