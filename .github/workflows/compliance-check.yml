@@ -186,6 +186,11 @@ jobs:
               // Collect all issues
               const problems = [];
 
+              // Always show the summary as the first problem if present
+              if (report.summary) {
+                problems.push(`**${report.summary}**`);
+              }
+
               if (report.unspecced_changes?.length > 0) {
                 problems.push(`**Code not covered by tickets** - Changes found that don't match any listed ticket`);
               }
@@ -197,6 +202,15 @@ jobs:
               }
               if (report.merge_commit_tickets?.length > 0) {
                 problems.push(`**Inherited tickets** - ${report.merge_commit_tickets.join(', ')} came from merge commits`);
+              }
+
+              // Show any additional issues from the report not already covered
+              if (report.issues?.length > 0) {
+                for (const issue of report.issues) {
+                  if (!problems.some(p => p.includes(issue))) {
+                    problems.push(issue);
+                  }
+                }
               }
 
               problems.forEach(p => body += `- ${p}\n`);
