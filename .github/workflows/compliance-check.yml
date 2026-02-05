@@ -262,5 +262,40 @@ jobs:
       - name: Fail if not compliant
         if: steps.check.outputs.compliant == 'false'
         run: |
-          echo "::error::SOC2 Compliance check failed. See PR comment for details."
+          echo ""
+          echo "============================================"
+          echo "  SOC2 Compliance Check FAILED"
+          echo "============================================"
+          echo ""
+
+          # Print summary
+          SUMMARY=$(jq -r '.summary // "No summary"' compliance_report.json 2>/dev/null)
+          echo "::error::$SUMMARY"
+          echo ""
+
+          # Print each violation category with details
+          for field in issues invalid_tickets unimplemented_tickets unspecced_changes missing_documentation; do
+            COUNT=$(jq -r ".$field | length" compliance_report.json 2>/dev/null || echo "0")
+            if [ "$COUNT" != "0" ] && [ "$COUNT" != "null" ]; then
+              LABEL=$(echo "$field" | tr '_' ' ' | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)}1')
+              echo "::group::$LABEL ($COUNT)"
+              jq -r ".$field[]" compliance_report.json 2>/dev/null | while IFS= read -r item; do
+                echo "  - $item"
+              done
+              echo "::endgroup::"
+            fi
+          done
+
+          # Print recommendations if any
+          REC_COUNT=$(jq -r '.recommendations | length' compliance_report.json 2>/dev/null || echo "0")
+          if [ "$REC_COUNT" != "0" ] && [ "$REC_COUNT" != "null" ]; then
+            echo ""
+            echo "Recommendations:"
+            jq -r '.recommendations[]' compliance_report.json 2>/dev/null | while IFS= read -r rec; do
+              echo "  → $rec"
+            done
+          fi
+
+          echo ""
+          echo "Full report: see PR comment or download the compliance-report artifact."
           exit 1
