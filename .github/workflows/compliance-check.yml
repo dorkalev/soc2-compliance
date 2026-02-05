@@ -58,13 +58,13 @@ on:
     outputs:
       compliant:
         description: "Whether the PR is compliant"
-        value: ${{ jobs.ticket-and-spec-review.outputs.compliant }}
+        value: ${{ jobs.tickets-and-specs.outputs.compliant }}
       report:
         description: "Compliance report JSON"
-        value: ${{ jobs.ticket-and-spec-review.outputs.report }}
+        value: ${{ jobs.tickets-and-specs.outputs.report }}
 
 jobs:
-  ticket-and-spec-review:
+  tickets-and-specs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
