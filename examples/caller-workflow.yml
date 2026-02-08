@@ -10,6 +10,11 @@ on:
     branches: [main, staging, develop]
     types: [opened, synchronize, reopened, ready_for_review]
 
+# Only one compliance run per PR at a time; new pushes cancel in-progress runs
+concurrency:
+  group: compliance-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 # Only run on non-draft PRs
 jobs:
   compliance-check:
