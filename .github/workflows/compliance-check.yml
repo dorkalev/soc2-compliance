@@ -250,42 +250,13 @@ jobs:
               body += `---\n<sub>[soc2-compliance](https://github.com/dorkalev/soc2-compliance) · commit ${commitSha} · [run ${runId}](https://github.com/${{ inputs.repo }}/actions/runs/${runId})</sub>`;
             }
 
-            // Find existing comment to update
-            const { data: comments } = await github.rest.issues.listComments({
+            // Always post a new comment to preserve compliance history
+            await github.rest.issues.createComment({
               owner: '${{ inputs.repo }}'.split('/')[0],
               repo: '${{ inputs.repo }}'.split('/')[1],
               issue_number: parseInt('${{ inputs.pr_number }}'),
+              body: body
             });
-
-            const botComment = comments.find(c =>
-              c.body.includes('SOC2 Compliance') &&
-              c.body.includes('soc2-compliance')
-            );
-
-            if (botComment) {
-              // Defense-in-depth: never overwrite a failure comment with a passing result.
-              // The concurrency control should prevent races, but if a stale run somehow
-              // finishes after a newer one already posted a failure, don't hide it.
-              const existingIsFailure = botComment.body.includes('❌');
-              if (report.compliant && existingIsFailure) {
-                console.log('Skipping comment update: existing comment reports a failure and this run passed. ' +
-                  'A newer run likely already identified issues. Run ID: ' + runId);
-              } else {
-                await github.rest.issues.updateComment({
-                  owner: '${{ inputs.repo }}'.split('/')[0],
-                  repo: '${{ inputs.repo }}'.split('/')[1],
-                  comment_id: botComment.id,
-                  body: body
-                });
-              }
-            } else {
-              await github.rest.issues.createComment({
-                owner: '${{ inputs.repo }}'.split('/')[0],
-                repo: '${{ inputs.repo }}'.split('/')[1],
-                issue_number: parseInt('${{ inputs.pr_number }}'),
-                body: body
-              });
-            }
 
       - name: Upload compliance report artifact
         if: always()
