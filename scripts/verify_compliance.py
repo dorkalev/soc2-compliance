@@ -693,7 +693,9 @@ No required reviewers configured. Skip this check.
 Work through these checks in order. Use tools to gather evidence — don't guess.
 
 ### 1. Ticket Traceability
-- Extract ticket IDs from the PR title AND description (pattern: {TICKET_PATTERN})
+- Extract ticket IDs ONLY from the PR title and PR description above (pattern: {TICKET_PATTERN})
+- Do NOT extract tickets from the diff, code comments, deleted lines, or PR review comments
+- If no tickets are found in the title/description, report that — do not go searching for them elsewhere
 - Verify each ticket exists in Linear (use linear_ticket)
 - Use git_diff_stat to see all changed files
 - Verify each ticket has corresponding code changes in the diff
