@@ -58,6 +58,11 @@ on:
         required: false
         type: number
         default: 70
+      pr_labels:
+        description: "Comma-separated PR labels (used for compliance:exempt detection)"
+        required: false
+        type: string
+        default: ""
     secrets:
       GEMINI_API_KEY:
         required: true
@@ -128,6 +133,7 @@ jobs:
           LINEAR_TEAM_ID: ${{ inputs.linear_team_id }}
           REQUIRED_REVIEWERS: ${{ inputs.required_reviewers }}
           CONFIDENCE_THRESHOLD: ${{ inputs.confidence_threshold }}
+          PR_LABELS: ${{ inputs.pr_labels }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |

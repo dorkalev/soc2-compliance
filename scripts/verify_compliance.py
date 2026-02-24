@@ -42,6 +42,8 @@ REQUIRED_REVIEWERS = [
     r.strip() for r in os.environ.get("REQUIRED_REVIEWERS", "").split(",") if r.strip()
 ]
 CONFIDENCE_THRESHOLD = int(os.environ.get("CONFIDENCE_THRESHOLD", "70"))
+PR_LABELS = [l.strip() for l in os.environ.get("PR_LABELS", "").split(",") if l.strip()]
+EXEMPT = "compliance:exempt" in PR_LABELS
 RUN_ID = os.environ.get("GITHUB_RUN_ID", "")
 COMMIT_SHA = os.environ.get("COMMIT_SHA", "")[:7]
 
@@ -124,12 +126,17 @@ class LiveComment:
         compliant = report.get("compliant", False)
         confidence = report.get("confidence_percent", 0)
         threshold = report.get("confidence_threshold", CONFIDENCE_THRESHOLD)
+        is_exempt = report.get("exempt", False)
         icon = "✅" if compliant else "❌"
 
-        body = f"## {icon} SOC2 Compliance: {confidence}%\n\n"
+        exempt_badge = " (exempt)" if is_exempt else ""
+        body = f"## {icon} SOC2 Compliance: {confidence}%{exempt_badge}\n\n"
 
         if compliant:
-            body += f"Confidence **{confidence}%** (threshold {threshold}%) — all checks look good.\n\n"
+            if is_exempt:
+                body += f"Confidence **{confidence}%** (threshold {threshold}%) — exempt PR, lightweight audit passed.\n\n"
+            else:
+                body += f"Confidence **{confidence}%** (threshold {threshold}%) — all checks look good.\n\n"
         else:
             body += f"Confidence **{confidence}%** (threshold {threshold}%)\n\n"
             body += "### Issues Found\n\n"
@@ -532,6 +539,104 @@ def _build_tool_declarations():
 # ---------------------------------------------------------------------------
 # System prompt
 # ---------------------------------------------------------------------------
+def build_exempt_system_prompt() -> str:
+    """System prompt for compliance:exempt PRs — lighter checklist."""
+    pr_title_line = f"- Title: {PR_TITLE}" if PR_TITLE else ""
+    pr_author_line = f"- Author: @{PR_AUTHOR}" if PR_AUTHOR else ""
+
+    reviewers_block = ""
+    if REQUIRED_REVIEWERS:
+        names = ", ".join(REQUIRED_REVIEWERS)
+        reviewers_block = f"""
+### 3. Review Tools ({names})
+For each reviewer:
+- First use pr_comments with author_filter to check if they already posted
+  (bot logins: coderabbit → "coderabbitai[bot]", aikido → "aikido-security[bot]", greptile → "greptile[bot]")
+- If they HAVEN'T posted yet, use wait_for_reviewer to wait for them (up to 2 minutes each).
+- Once they've posted, scan for CRITICAL or MAJOR severity findings
+- Use pr_review_threads with state_filter="unresolved" to find open threads
+- A critical/major finding is unresolved if: the thread is unresolved AND the
+  original author is a review bot AND no human replied acknowledging it
+
+**Confidence impact:**
+- Bot posted, all findings resolved → no penalty.
+- Bot posted, unresolved CRITICAL finding → major penalty (~25-30%).
+- Bot posted, unresolved MAJOR finding → moderate penalty (~10-15%).
+- Bot posted, only minor/info findings unresolved → no penalty.
+- Bot didn't post even after waiting → minor penalty (~5%).
+"""
+    else:
+        reviewers_block = """
+### 3. Review Tools
+No required reviewers configured. Skip this check.
+"""
+
+    return f"""You are a SOC2 compliance auditor. This PR has the **compliance:exempt** label, indicating a trivial change (CI config, dependency pin, typo fix, infrastructure update).
+
+## Context
+- PR #{PR_NUMBER} in {REPO}
+{pr_title_line}
+{pr_author_line}
+- Base branch: {BASE_BRANCH}
+- Label: compliance:exempt
+
+## PR Title
+{PR_TITLE or "(no title)"}
+
+## PR Description
+{PR_BODY}
+
+## Exempt PR Checklist
+
+This is a lighter audit. Ticket traceability, issue/spec files, and test coverage are NOT required.
+Instead, verify:
+
+### 1. Scope Validation
+- Use git_diff_stat to see all changed files
+- Use git_diff to read the actual changes
+- Verify this is genuinely a small/trivial change (CI, config, deps, typos, formatting)
+- If the change includes substantial new features or business logic, it should NOT be exempt — flag this
+
+### 2. Security Check
+- Scan the diff for obvious security issues (leaked secrets, dangerous permissions, etc.)
+- Flag anything suspicious
+{reviewers_block}
+## Output
+
+When done, call submit_report with a JSON string containing:
+{{
+  "confidence_percent": 90,
+  "tickets_found": [],
+  "invalid_tickets": [],
+  "unspecced_changes": [],
+  "missing_documentation": [],
+  "spec_issues": [],
+  "untested_files": [],
+  "unresolved_reviews": [],
+  "missing_reviewers": [],
+  "exempt": true,
+  "exempt_justified": true,
+  "summary": "Brief summary"
+}}
+
+## Confidence Scoring for Exempt PRs
+
+- **90–100**: Genuinely trivial change (CI config, dep pin, typo). No security concerns. Exemption justified.
+- **70–89**: Small change, exemption reasonable but borderline (e.g., touches a few source lines for a bugfix).
+- **40–69**: Change is too large or complex for exemption. Should have a ticket.
+- **0–39**: Substantial feature work labeled as exempt. Exemption NOT justified.
+
+Set `exempt_justified` to false if the change doesn't qualify as trivial.
+
+The threshold for passing is {CONFIDENCE_THRESHOLD}%.
+
+## Rules
+- Be efficient — this should be a quick check.
+- The key question: "Is this change genuinely trivial enough to skip full traceability?"
+- Call submit_report exactly once when you're done.
+"""
+
+
 def build_system_prompt() -> str:
     reviewers_block = ""
     if REQUIRED_REVIEWERS:
@@ -738,7 +843,7 @@ def run_agent(comment: LiveComment) -> dict:
 
     client = genai.Client(api_key=GEMINI_API_KEY)
     tool_declarations = _build_tool_declarations()
-    system_prompt = build_system_prompt()
+    system_prompt = build_exempt_system_prompt() if EXEMPT else build_system_prompt()
 
     contents = [
         types.Content(
@@ -881,6 +986,17 @@ def enforce_policy(findings: dict) -> dict:
         "missing_reviewers": findings.get("missing_reviewers", []),
     }
 
+    # Exempt PR handling
+    if EXEMPT:
+        report["exempt"] = True
+        exempt_justified = findings.get("exempt_justified", True)
+        report["exempt_justified"] = exempt_justified
+        if not exempt_justified:
+            report["compliant"] = False
+            report["issues"].append(
+                "Change is too large or complex for compliance:exempt — create a ticket"
+            )
+
     # Build human-readable issues list from findings (for the comment)
     if report["invalid_tickets"]:
         report["issues"].append(
@@ -929,7 +1045,10 @@ def main():
         return
 
     comment = LiveComment()
-    comment.add_step("🔄", "Starting compliance audit...")
+    if EXEMPT:
+        comment.add_step("🔄", "Starting **exempt** compliance audit (lightweight)...")
+    else:
+        comment.add_step("🔄", "Starting compliance audit...")
 
     try:
         findings = run_agent(comment)

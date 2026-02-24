@@ -54,6 +54,9 @@ jobs:
       # 70 = minor gaps OK, 90 = strict, 50 = lenient
       confidence_threshold: 70
 
+      # PR labels — used to detect compliance:exempt for trivial changes
+      pr_labels: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+
     secrets:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}  # Optional
