@@ -1,42 +1,36 @@
 # SOC2 Compliance Checker
 
-AI-powered compliance verification for pull requests. Ensures code changes align with issue tracker tickets and technical specifications.
+AI-powered compliance verification for pull requests. An agent investigates each PR — checking ticket traceability, documentation, test coverage, and review tool findings — then posts a live progress comment with a confidence score.
 
 ## Features
 
-- Verifies PR changes match referenced tickets (Linear integration)
-- Checks alignment with local issue requirement files
-- Validates implementation against technical specs
-- Detects unspecced/undocumented changes
-- Posts detailed compliance reports to PRs
-- Handles large diffs via intelligent summarization
-- Fully configurable patterns and paths
+- **Ticket traceability** — verifies PR references valid Linear tickets
+- **Documentation checks** — ensures issue and spec files exist and align with code
+- **Test coverage** — flags changed source files without corresponding tests
+- **Review tool gate** — waits for CodeRabbit/Aikido/Greptile and checks for unresolved findings
+- **Confidence scoring** — 0–100% score with configurable pass threshold
+- **Live PR comments** — updates in real-time as the agent investigates
+- **Exempt mode** — lightweight audit for trivial changes via `compliance:exempt` label
 
 ## How It Works
 
 ```
-PR Opened/Updated
+PR Opened/Updated/Labeled
        │
        ▼
-Extract ticket IDs from PR body (configurable pattern)
+AI agent starts investigating (Gemini 2.0 Flash)
        │
-       ├──► Fetch from Linear API (optional)
-       │
-       ├──► Read issues/*.md files
-       │
-       ├──► Read specs/*.md files
-       │
-       ▼
-Generate diff from base branch
+       ├──► git diff stat → scope the changes
+       ├──► Extract ticket IDs → verify in Linear
+       ├──► Check issues/*.md and specs/*.md
+       ├──► Find test files for changed source
+       ├──► Wait for review bots → check findings
        │
        ▼
-Send to Gemini for alignment analysis
+Post compliance report with confidence score
        │
        ▼
-Post compliance report to PR
-       │
-       ▼
-Pass/Fail the check
+Pass (≥ threshold) / Fail (< threshold)
 ```
 
 ## Usage
@@ -46,9 +40,11 @@ Pass/Fail the check
 | Secret | Required | Description |
 |--------|----------|-------------|
 | `GEMINI_API_KEY` | Yes | Google Gemini API key |
-| `LINEAR_API_KEY` | No | Linear API key for ticket fetching |
+| `LINEAR_API_KEY` | No | Linear API key for ticket verification |
 
 ### 2. Create workflow in your repository
+
+Copy from [`examples/caller-workflow.yml`](examples/caller-workflow.yml):
 
 ```yaml
 # .github/workflows/compliance.yml
@@ -57,18 +53,29 @@ name: SOC2 Compliance
 on:
   pull_request:
     branches: [main, staging]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+
+concurrency:
+  group: compliance-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   compliance-check:
+    if: github.event.pull_request.draft == false
     uses: dorkalev/soc2-compliance/.github/workflows/compliance-check.yml@main
     with:
       pr_body: ${{ github.event.pull_request.body }}
+      pr_title: ${{ github.event.pull_request.title }}
+      pr_author: ${{ github.event.pull_request.user.login }}
       pr_number: ${{ github.event.pull_request.number }}
       repo: ${{ github.repository }}
-      ticket_pattern: "PROJ-[0-9]+"  # Your ticket pattern
+      ticket_pattern: "PROJ-[0-9]+"
       base_branch: main
       issues_path: issues
       specs_path: specs
+      required_reviewers: "coderabbit,aikido,greptile"
+      confidence_threshold: 70
+      pr_labels: ${{ join(github.event.pull_request.labels.*.name, ',') }}
     secrets:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
@@ -77,13 +84,15 @@ jobs:
 
 ### 3. Configure branch protection
 
-Add `compliance-check` as a required status check on your protected branches.
+Add the compliance job as a required status check on your protected branches.
 
 ## Configuration
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `pr_body` | Yes | - | PR description text |
+| `pr_title` | No | `""` | PR title |
+| `pr_author` | No | `""` | PR author login |
 | `pr_number` | Yes | - | PR number for commenting |
 | `repo` | Yes | - | Repository (owner/name) |
 | `ticket_pattern` | Yes | - | Regex for ticket IDs (e.g., `PROJ-[0-9]+`) |
@@ -91,8 +100,80 @@ Add `compliance-check` as a required status check on your protected branches.
 | `issues_path` | No | `issues` | Path to issue requirement files |
 | `specs_path` | No | `specs` | Path to technical spec files |
 | `linear_team_id` | No | - | Linear team ID for filtering |
-| `fail_on_unspecced` | No | `true` | Fail if changes aren't in specs |
-| `fail_on_missing_ticket` | No | `true` | Fail if no ticket in PR body |
+| `required_reviewers` | No | `""` | Comma-separated review bots (e.g., `coderabbit,aikido,greptile`) |
+| `confidence_threshold` | No | `70` | Minimum confidence % to pass (0–100) |
+| `pr_labels` | No | `""` | Comma-separated PR labels (for `compliance:exempt` detection) |
+
+## Exempt Mode (`compliance:exempt`)
+
+For trivial changes that don't warrant full ticket traceability — CI config updates, dependency pins, typo fixes, formatting changes.
+
+### How to use
+
+1. Add a `compliance:exempt` label to your PR
+2. The compliance check re-triggers automatically (via the `labeled` event)
+3. The agent runs a **lightweight audit** instead of the full checklist
+
+### What's checked in exempt mode
+
+| Check | Full audit | Exempt audit |
+|-------|-----------|--------------|
+| Ticket traceability | Yes | **Skipped** |
+| Issue/spec files | Yes | **Skipped** |
+| Test coverage | Yes | **Skipped** |
+| Scope validation | - | **Yes** (verifies change is genuinely trivial) |
+| Security scan | Yes | Yes |
+| Review tools | Yes | Yes |
+
+### What qualifies as exempt
+
+- CI/CD workflow changes (`.github/workflows/`)
+- Dependency version pins
+- Typo and formatting fixes
+- Config file updates
+- Documentation-only changes
+
+### What does NOT qualify
+
+The agent will **reject the exemption** (fail the check) if:
+- The PR includes substantial new features or business logic
+- Source code changes are too large or complex
+- The change modifies security-sensitive code
+
+This prevents abuse — you can't slap `compliance:exempt` on a feature PR to skip traceability.
+
+### Setup
+
+To enable exempt mode, make sure your caller workflow:
+
+1. Includes `labeled` in the event types:
+   ```yaml
+   types: [opened, synchronize, reopened, ready_for_review, labeled]
+   ```
+
+2. Passes PR labels:
+   ```yaml
+   pr_labels: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+   ```
+
+3. Create the label in your GitHub repo:
+   ```bash
+   gh label create "compliance:exempt" --description "Skip ticket traceability for trivial changes"
+   ```
+
+## Confidence Scoring
+
+The agent assigns a confidence score (0–100%) based on its investigation:
+
+| Range | Meaning |
+|-------|---------|
+| 90–100 | Full traceability. Tickets verified, specs aligned, tests exist, reviews clean. |
+| 70–89 | Minor gaps. Config without dedicated tests, slightly stale spec. Audit trail is solid. |
+| 50–69 | Significant gaps. Missing specs, several untested files, but tickets exist. |
+| 30–49 | Major issues. Missing tickets for substantial code, no tests, unresolved critical findings. |
+| 0–29 | No traceability. No tickets, no docs, no tests. |
+
+The `confidence_threshold` input (default: 70) determines pass/fail.
 
 ## Expected File Structure
 
@@ -100,12 +181,10 @@ Add `compliance-check` as a required status check on your protected branches.
 your-repo/
 ├── issues/
 │   ├── PROJ-123.md      # Product requirements
-│   ├── PROJ-456.md
-│   └── ...
+│   └── PROJ-456.md
 ├── specs/
 │   ├── feature-auth.md  # Technical specifications
-│   ├── proj-123.md      # Can match ticket IDs
-│   └── ...
+│   └── proj-123.md
 └── .github/
     └── workflows/
         └── compliance.yml
@@ -113,9 +192,8 @@ your-repo/
 
 ### Issue Files (issues/*.md)
 
-Product requirements documents. Should contain:
-- User stories
-- Acceptance criteria
+Product requirements. Should contain:
+- User stories and acceptance criteria
 - Business logic requirements
 - UX requirements
 
@@ -124,69 +202,10 @@ Naming: `{TICKET-ID}.md` (e.g., `PROJ-123.md`)
 ### Spec Files (specs/*.md)
 
 Technical specifications. Should contain:
-- Architecture decisions
+- Architecture decisions and trade-offs
 - Implementation approach
 - API contracts / data models
 - Edge cases and error handling
-
-Can reference tickets in content or filename.
-
-## PR Description Format
-
-Reference tickets in your PR body:
-
-```markdown
-## Summary
-Implements user authentication flow.
-
-## Linear Tickets
-- PROJ-123: Add login page
-- PROJ-124: Add OAuth integration
-
-## Changes
-- Added login component
-- Integrated Google OAuth
-```
-
-## Compliance Report
-
-The checker posts a comment on your PR:
-
-```markdown
-## ✅ SOC2 Compliance Check: Passed
-
-**Summary:** Changes align with PROJ-123 and PROJ-124 specifications.
-
-### Tickets Referenced
-- PROJ-123
-- PROJ-124
-
-### Spec Coverage
-All changes are documented in specs/auth-flow.md
-```
-
-Or if it fails:
-
-```markdown
-## ❌ SOC2 Compliance Check: Failed
-
-**Summary:** Unspecced changes detected in authentication module.
-
-### Issues Found
-- ⚠️ New rate limiting logic not documented in any spec
-- ⚠️ PROJ-124 mentions OAuth but code implements SAML
-
-### Unspecced Changes
-- `src/auth/rate_limiter.py`
-- `src/auth/saml.py`
-```
-
-## Large PRs
-
-For PRs with large diffs (>100K tokens), the checker:
-1. Summarizes changes by file
-2. Includes truncated per-file diffs
-3. Focuses analysis on high-level alignment
 
 ## Security
 
@@ -203,9 +222,14 @@ This checker runs in a separate repository with restricted access:
 export GEMINI_API_KEY=your-key
 export LINEAR_API_KEY=your-key
 export PR_BODY="Implements PROJ-123"
+export PR_TITLE="PROJ-123: Add auth flow"
+export PR_NUMBER=42
+export REPO=your-org/your-repo
 export TARGET_REPO=/path/to/repo
 export TICKET_PATTERN="PROJ-[0-9]+"
 export BASE_BRANCH=main
+export REQUIRED_REVIEWERS="coderabbit"
+export CONFIDENCE_THRESHOLD=70
 
 python scripts/verify_compliance.py
 ```
@@ -213,8 +237,8 @@ python scripts/verify_compliance.py
 ### Requirements
 
 - Python 3.12+
-- `httpx` - HTTP client
-- `google-genai` - Gemini API client
+- `httpx` — HTTP client
+- `google-genai` — Gemini API client
 
 ## License
 
