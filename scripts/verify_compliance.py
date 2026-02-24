@@ -499,15 +499,23 @@ def build_system_prompt() -> str:
     if REQUIRED_REVIEWERS:
         names = ", ".join(REQUIRED_REVIEWERS)
         reviewers_block = f"""
-### 5. Review Tools (REQUIRED: {names})
-For each required reviewer:
+### 5. Review Tools ({names})
+For each reviewer:
 - Use pr_comments with author_filter to check if they posted a review
   (bot logins: coderabbit → "coderabbitai[bot]", aikido → "aikido-security[bot]", greptile → "greptile[bot]")
 - If they posted, scan for CRITICAL or MAJOR severity findings
 - Use pr_review_threads with state_filter="unresolved" to find open threads
 - A critical/major finding is unresolved if: the thread is unresolved AND the
   original author is a review bot AND no human replied acknowledging it
-- Report: which reviewers posted, which are missing, and any unresolved critical/major findings
+
+**Confidence impact:**
+- Bot hasn't posted yet → minor penalty (~5% each). It might be slow or the PR was just opened.
+- Bot posted, all findings resolved → no penalty. Good signal.
+- Bot posted, unresolved CRITICAL finding → major penalty (~25-30%). This is a real risk.
+- Bot posted, unresolved MAJOR finding → moderate penalty (~10-15%).
+- Bot posted, only minor/info findings unresolved → no penalty. These are suggestions.
+
+Report: which reviewers posted, which are missing, and any unresolved critical/major findings.
 """
     else:
         reviewers_block = """
