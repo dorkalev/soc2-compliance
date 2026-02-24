@@ -23,6 +23,8 @@ jobs:
     with:
       # Required inputs
       pr_body: ${{ github.event.pull_request.body }}
+      pr_title: ${{ github.event.pull_request.title }}
+      pr_author: ${{ github.event.pull_request.user.login }}
       pr_number: ${{ github.event.pull_request.number }}
       repo: ${{ github.repository }}
 
@@ -43,9 +45,14 @@ jobs:
       # Optional: Linear team ID for filtering tickets
       # linear_team_id: "your-team-id"
 
-      # Policy settings
-      fail_on_unspecced: true      # Fail if changes aren't documented
-      fail_on_missing_ticket: true  # Fail if no ticket in PR body
+      # Required review bots — compliance fails if they haven't posted
+      # or have unresolved critical/major findings
+      # Options: coderabbit, aikido, greptile (comma-separated)
+      required_reviewers: "coderabbit,aikido,greptile"
+
+      # Minimum confidence score to pass (0-100)
+      # 70 = minor gaps OK, 90 = strict, 50 = lenient
+      confidence_threshold: 70
 
     secrets:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

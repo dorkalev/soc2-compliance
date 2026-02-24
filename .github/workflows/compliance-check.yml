@@ -7,6 +7,16 @@ on:
         description: "Pull request body text"
         required: true
         type: string
+      pr_title:
+        description: "Pull request title"
+        required: false
+        type: string
+        default: ""
+      pr_author:
+        description: "Pull request author login"
+        required: false
+        type: string
+        default: ""
       pr_number:
         description: "Pull request number"
         required: true
@@ -38,16 +48,16 @@ on:
         description: "Linear team ID (optional, for Linear integration)"
         required: false
         type: string
-      fail_on_unspecced:
-        description: "Fail if changes are not covered by specs"
+      required_reviewers:
+        description: "Comma-separated required review bots (e.g., 'coderabbit,aikido,greptile')"
         required: false
-        type: boolean
-        default: true
-      fail_on_missing_ticket:
-        description: "Fail if no ticket is referenced in PR"
+        type: string
+        default: ""
+      confidence_threshold:
+        description: "Minimum confidence % to pass (0-100)"
         required: false
-        type: boolean
-        default: true
+        type: number
+        default: 70
     secrets:
       GEMINI_API_KEY:
         required: true
@@ -58,13 +68,13 @@ on:
     outputs:
       compliant:
         description: "Whether the PR is compliant"
-        value: ${{ jobs.tickets-and-specs.outputs.compliant }}
+        value: ${{ jobs.compliance-audit.outputs.compliant }}
       report:
         description: "Compliance report JSON"
-        value: ${{ jobs.tickets-and-specs.outputs.report }}
+        value: ${{ jobs.compliance-audit.outputs.report }}
 
 jobs:
-  tickets-and-specs:
+  compliance-audit:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -98,63 +108,62 @@ jobs:
       - name: Install dependencies
         run: pip install httpx google-genai
 
-      - name: Run compliance check
+      - name: Run compliance agent
         id: check
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.REPO_TOKEN }}
+          REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
           PR_BODY: ${{ inputs.pr_body }}
+          PR_TITLE: ${{ inputs.pr_title }}
+          PR_AUTHOR: ${{ inputs.pr_author }}
           PR_NUMBER: ${{ inputs.pr_number }}
+          REPO: ${{ inputs.repo }}
           TARGET_REPO: ./target
           BASE_BRANCH: ${{ inputs.base_branch }}
           TICKET_PATTERN: ${{ inputs.ticket_pattern }}
           ISSUES_PATH: ${{ inputs.issues_path }}
           SPECS_PATH: ${{ inputs.specs_path }}
           LINEAR_TEAM_ID: ${{ inputs.linear_team_id }}
-          FAIL_ON_UNSPECCED: ${{ inputs.fail_on_unspecced }}
-          FAIL_ON_MISSING_TICKET: ${{ inputs.fail_on_missing_ticket }}
+          REQUIRED_REVIEWERS: ${{ inputs.required_reviewers }}
+          CONFIDENCE_THRESHOLD: ${{ inputs.confidence_threshold }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          # Run compliance check, capturing stdout as JSON and stderr separately
           set +e
           python scripts/verify_compliance.py > compliance_report.json 2>compliance_stderr.log
           EXIT_CODE=$?
           set -e
 
-          # Display stderr in logs for debugging (if any)
           if [ -s compliance_stderr.log ]; then
-            echo "::group::Python stderr output"
+            echo "::group::Agent stderr"
             cat compliance_stderr.log
             echo "::endgroup::"
           fi
 
-          # If script failed or output is empty, create error report
+          # Fallback if script crashed
           if [ $EXIT_CODE -ne 0 ] || [ ! -s compliance_report.json ]; then
-            echo "Script failed with exit code $EXIT_CODE"
-            cat compliance_report.json || true
-            if [ -s compliance_stderr.log ]; then
-              echo "Stderr output:"
-              cat compliance_stderr.log
-            fi
-            echo '{"compliant": false, "summary": "Compliance check script failed", "issues": ["Script error - check workflow logs"], "tickets_found": []}' > compliance_report.json
+            echo "Agent failed with exit code $EXIT_CODE"
+            echo '{"compliant": false, "summary": "Compliance agent crashed", "issues": ["Check workflow logs"], "tickets_found": []}' > compliance_report.json
           fi
 
           # Validate JSON
           if ! jq -e . compliance_report.json > /dev/null 2>&1; then
-            echo "Invalid JSON in compliance_report.json:"
+            echo "Invalid JSON output:"
             cat compliance_report.json
-            echo '{"compliant": false, "summary": "Invalid JSON output from compliance script", "issues": ["Script produced invalid JSON"], "tickets_found": []}' > compliance_report.json
+            echo '{"compliant": false, "summary": "Agent produced invalid JSON", "issues": ["Check workflow logs"], "tickets_found": []}' > compliance_report.json
           fi
 
-          # Extract results for outputs
           COMPLIANT=$(jq -r '.compliant' compliance_report.json)
           echo "compliant=$COMPLIANT" >> $GITHUB_OUTPUT
 
-          # Store full report (escape for GitHub Actions)
           REPORT=$(cat compliance_report.json | jq -c .)
           echo "report=$REPORT" >> $GITHUB_OUTPUT
 
-      - name: Post comment to PR
-        if: always()
+      # Fallback comment — only if the agent didn't manage to post one
+      - name: Post fallback comment
+        if: failure()
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.REPO_TOKEN }}
@@ -162,103 +171,29 @@ jobs:
             const fs = require('fs');
             let report;
             try {
-              const content = fs.readFileSync('compliance_report.json', 'utf8');
-              if (!content || content.trim() === '') {
-                throw new Error('compliance_report.json is empty');
-              }
-              report = JSON.parse(content);
-            } catch (e) {
-              console.error('Failed to parse compliance_report.json:', e.message);
-              report = {
-                compliant: false,
-                summary: 'Failed to parse compliance report: ' + e.message,
-                issues: ['Check workflow logs for details'],
-                tickets_found: []
-              };
+              report = JSON.parse(fs.readFileSync('compliance_report.json', 'utf8'));
+            } catch {
+              report = { compliant: false, summary: 'Agent crashed before reporting', issues: ['Check workflow logs'] };
             }
 
-            const icon = report.compliant ? '✅' : '❌';
-            const status = report.compliant ? 'Passed' : 'Failed';
-            const primaryTicket = report.tickets_found?.[0] || 'TICKET-XXX';
+            const sha = '${{ github.event.pull_request.head.sha || github.sha }}'.substring(0, 7);
             const runId = '${{ github.run_id }}';
-            const commitSha = '${{ github.event.pull_request.head.sha || github.sha }}'.substring(0, 7);
-
-            let body = `## ${icon} SOC2 Compliance: ${status}\n\n`;
-
-            // Passed - keep it short
-            if (report.compliant) {
-              body += `All code changes are documented and traceable to Linear tickets.\n\n`;
-              if (report.tickets_found?.length > 0) {
-                body += `**Tickets:** ${report.tickets_found.join(', ')}\n\n`;
-              }
-              body += `---\n<sub>[soc2-compliance](https://github.com/dorkalev/soc2-compliance) · commit ${commitSha} · [run ${runId}](https://github.com/${{ inputs.repo }}/actions/runs/${runId})</sub>`;
-            } else {
-              // Failed - provide actionable guidance
-              body += `### What Failed\n\n`;
-
-              // Collect all issues
-              const problems = [];
-
-              // Always show the summary as the first problem if present
-              if (report.summary) {
-                problems.push(`**${report.summary}**`);
-              }
-
-              if (report.unspecced_changes?.length > 0) {
-                problems.push(`**Code not covered by tickets** - Changes found that don't match any listed ticket`);
-              }
-              if (report.invalid_tickets?.length > 0) {
-                problems.push(`**Invalid tickets** - ${report.invalid_tickets.join(', ')} not found in Linear`);
-              }
-              if (report.unimplemented_tickets?.length > 0) {
-                problems.push(`**Ghost tickets** - ${report.unimplemented_tickets.join(', ')} listed but no code changes`);
-              }
-              if (report.merge_commit_tickets?.length > 0) {
-                problems.push(`**Inherited tickets** - ${report.merge_commit_tickets.join(', ')} came from merge commits`);
-              }
-
-              // Show any additional issues from the report not already covered
-              if (report.issues?.length > 0) {
-                for (const issue of report.issues) {
-                  if (!problems.some(p => p.includes(issue))) {
-                    problems.push(issue);
-                  }
-                }
-              }
-
-              problems.forEach(p => body += `- ${p}\n`);
-              body += '\n';
-
-              // THE FIX - one command
-              body += `---\n\n`;
-              body += `## 🔧 How to Fix\n\n`;
-              body += `Run this command in Claude Code:\n\n`;
-              body += `\`\`\`\n/forge:fix-compliance\n\`\`\`\n\n`;
-              body += `This will ensure all code changes are covered by tickets.\n\n`;
-
-              // Additional context for specific issues
-              if (report.merge_commit_tickets?.length > 0) {
-                body += `### Note: Inherited Tickets\n\n`;
-                body += `Tickets ${report.merge_commit_tickets.join(', ')} appear in the PR but have no commits on this branch. `;
-                body += `They likely came from merging staging/main. Remove them from the Linear Tickets table.\n\n`;
-              }
-
-              if (report.spec_coverage) {
-                body += `### Spec Coverage\n${report.spec_coverage}\n\n`;
-              }
-
-              body += `---\n<sub>[soc2-compliance](https://github.com/dorkalev/soc2-compliance) · commit ${commitSha} · [run ${runId}](https://github.com/${{ inputs.repo }}/actions/runs/${runId})</sub>`;
+            let body = `## ❌ SOC2 Compliance: Failed\n\n`;
+            body += `**${report.summary || 'Unknown error'}**\n\n`;
+            if (report.issues?.length) {
+              report.issues.forEach(i => body += `- ${i}\n`);
             }
+            body += `\n---\n\n## 🔧 How to Fix\n\nRun this command in Claude Code:\n\n\`\`\`\n/forge:fix-compliance\n\`\`\`\n\n`;
+            body += `---\n<sub>[soc2-compliance](https://github.com/dorkalev/soc2-compliance) · commit ${sha} · [run ${runId}](https://github.com/${{ inputs.repo }}/actions/runs/${runId})</sub>`;
 
-            // Always post a new comment to preserve compliance history
             await github.rest.issues.createComment({
               owner: '${{ inputs.repo }}'.split('/')[0],
               repo: '${{ inputs.repo }}'.split('/')[1],
               issue_number: parseInt('${{ inputs.pr_number }}'),
-              body: body
+              body
             });
 
-      - name: Upload compliance report artifact
+      - name: Upload compliance report
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -274,17 +209,14 @@ jobs:
           echo "  SOC2 Compliance Check FAILED"
           echo "============================================"
           echo ""
-
-          # Print summary
           SUMMARY=$(jq -r '.summary // "No summary"' compliance_report.json 2>/dev/null)
           echo "::error::$SUMMARY"
           echo ""
 
-          # Print each violation category with details
-          for field in issues invalid_tickets unimplemented_tickets unspecced_changes missing_documentation; do
+          for field in issues invalid_tickets unspecced_changes missing_documentation untested_files unresolved_reviews missing_reviewers spec_issues; do
             COUNT=$(jq -r ".$field | length" compliance_report.json 2>/dev/null || echo "0")
             if [ "$COUNT" != "0" ] && [ "$COUNT" != "null" ]; then
-              LABEL=$(echo "$field" | tr '_' ' ' | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)}1')
+              LABEL=$(echo "$field" | tr '_' ' ')
               echo "::group::$LABEL ($COUNT)"
               jq -r ".$field[]" compliance_report.json 2>/dev/null | while IFS= read -r item; do
                 echo "  - $item"
@@ -293,16 +225,4 @@ jobs:
             fi
           done
 
-          # Print recommendations if any
-          REC_COUNT=$(jq -r '.recommendations | length' compliance_report.json 2>/dev/null || echo "0")
-          if [ "$REC_COUNT" != "0" ] && [ "$REC_COUNT" != "null" ]; then
-            echo ""
-            echo "Recommendations:"
-            jq -r '.recommendations[]' compliance_report.json 2>/dev/null | while IFS= read -r rec; do
-              echo "  → $rec"
-            done
-          fi
-
-          echo ""
-          echo "Full report: see PR comment or download the compliance-report artifact."
           exit 1

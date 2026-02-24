@@ -1,7 +1,7 @@
-# Post-merge workflow that archives compliance reports to git
+# Post-merge workflow that archives compliance reports and alerts on non-compliant merges
 #
 # Creates permanent audit trail at: compliance/pr-{num}-{ticket}-{slug}-{date}.json
-# Posts to Slack with link to the archived report
+# Sends Slack alert if a PR was merged without passing compliance
 #
 # Copy this to your repo's .github/workflows/ directory
 
@@ -19,6 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       archive_url: ${{ steps.commit.outputs.archive_url }}
+      compliant: ${{ steps.archive.outputs.compliant }}
+      confidence: ${{ steps.archive.outputs.confidence }}
+      violations: ${{ steps.archive.outputs.violations }}
 
     steps:
       - name: Checkout target branch
@@ -42,33 +45,28 @@ jobs:
           PR_TITLE="${{ github.event.pull_request.title }}"
           DATE=$(date -u +%Y%m%d)
 
-          # Extract ticket ID from title (e.g., "BOL-396: Description" -> "BOL-396")
+          # Extract ticket ID from title (e.g., "PROJ-396: Description" -> "PROJ-396")
           TICKET=$(echo "$PR_TITLE" | grep -oE '^[A-Z]+-[0-9]+' | head -1)
           if [ -z "$TICKET" ]; then
             TICKET="no-ticket"
           fi
 
-          # Create slug from title (remove ticket prefix, lowercase, replace spaces with dashes)
+          # Create slug from title
           SLUG=$(echo "$PR_TITLE" | sed -E 's/^[A-Z]+-[0-9]+:?\s*//' | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-' | head -c 40)
           if [ -z "$SLUG" ]; then
             SLUG="merge"
           fi
 
-          # Build filename: pr-106-BOL-396-christians-bag-of-bugs-20260203.json
           FILENAME="pr-${PR_NUM}-${TICKET}-${SLUG}-${DATE}.json"
           FILEPATH="compliance/${FILENAME}"
 
-          echo "Creating archive: $FILEPATH"
-
-          # Use downloaded artifact or create minimal record
           if [ -f "./artifact/compliance_report.json" ]; then
-            # Enhance with metadata
             jq --arg pr "$PR_NUM" \
                --arg title "$PR_TITLE" \
                --arg ticket "$TICKET" \
                --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
                --arg branch "${{ github.event.pull_request.base.ref }}" \
-               --arg author "${{ github.event.pull_request.user.login }}" \
+               --arg author "${{ github.event.pull_request.merged_by.login }}" \
                --arg pr_url "${{ github.event.pull_request.html_url }}" \
                --arg head_sha "${{ github.event.pull_request.head.sha }}" \
                '. + {
@@ -81,9 +79,15 @@ jobs:
                  merged_by: $author,
                  head_sha: $head_sha
                }' ./artifact/compliance_report.json > "$FILEPATH"
+
+            # Extract compliance status for downstream jobs
+            COMPLIANT=$(jq -r '.compliant // "unknown"' ./artifact/compliance_report.json)
+            CONFIDENCE=$(jq -r '.confidence_percent // "?"' ./artifact/compliance_report.json)
+            VIOLATIONS=$(jq -r '.summary // ""' ./artifact/compliance_report.json)
           else
-            # No artifact found - create minimal record
             echo "Warning: No compliance artifact found, creating minimal record"
+            COMPLIANT="unknown"
+            VIOLATIONS="Compliance report not found — PR may predate compliance workflow"
             cat > "$FILEPATH" << EOF
           {
             "archived_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
@@ -92,15 +96,18 @@ jobs:
             "primary_ticket": "$TICKET",
             "pr_url": "${{ github.event.pull_request.html_url }}",
             "target_branch": "${{ github.event.pull_request.base.ref }}",
-            "merged_by": "${{ github.event.pull_request.user.login }}",
+            "merged_by": "${{ github.event.pull_request.merged_by.login }}",
             "head_sha": "${{ github.event.pull_request.head.sha }}",
-            "note": "Compliance report artifact not found - PR may predate compliance workflow"
+            "compliant": null,
+            "note": "Compliance report artifact not found"
           }
           EOF
           fi
 
+          echo "compliant=$COMPLIANT" >> $GITHUB_OUTPUT
+          echo "confidence=$CONFIDENCE" >> $GITHUB_OUTPUT
+          echo "violations=$VIOLATIONS" >> $GITHUB_OUTPUT
           echo "filepath=$FILEPATH" >> $GITHUB_OUTPUT
-          echo "filename=$FILENAME" >> $GITHUB_OUTPUT
 
       - name: Commit and push archive
         id: commit
@@ -121,11 +128,10 @@ jobs:
           Automated SOC2 compliance archive.
           PR: ${{ github.event.pull_request.html_url }}
           Title: ${{ github.event.pull_request.title }}
-          Merged by: ${{ github.event.pull_request.user.login }}"
+          Merged by: ${{ github.event.pull_request.merged_by.login }}"
 
           git push
 
-          # Build URL to the archived file
           ARCHIVE_URL="https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.base.ref }}/${{ steps.archive.outputs.filepath }}"
           echo "archive_url=$ARCHIVE_URL" >> $GITHUB_OUTPUT
 
@@ -145,29 +151,66 @@ jobs:
           PR_NUM="${{ github.event.pull_request.number }}"
           PR_TITLE="${{ github.event.pull_request.title }}"
           PR_URL="${{ github.event.pull_request.html_url }}"
-          AUTHOR="${{ github.event.pull_request.user.login }}"
+          AUTHOR="${{ github.event.pull_request.merged_by.login }}"
           BASE="${{ github.event.pull_request.base.ref }}"
           ARCHIVE_URL="${{ needs.archive.outputs.archive_url }}"
+          COMPLIANT="${{ needs.archive.outputs.compliant }}"
+          CONFIDENCE="${{ needs.archive.outputs.confidence }}"
+          VIOLATIONS="${{ needs.archive.outputs.violations }}"
 
-          curl -X POST "$SLACK_WEBHOOK_URL" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"blocks\": [
-                {
-                  \"type\": \"section\",
-                  \"text\": {
-                    \"type\": \"mrkdwn\",
-                    \"text\": \"✅ *<${PR_URL}|PR #${PR_NUM}>* merged to \`${BASE}\`\n${PR_TITLE}\"
-                  }
-                },
-                {
-                  \"type\": \"context\",
-                  \"elements\": [
-                    {
+          if [ "$COMPLIANT" = "false" ]; then
+            # Non-compliant merge — alert
+            curl -s -X POST "$SLACK_WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"blocks\": [
+                  {
+                    \"type\": \"section\",
+                    \"text\": {
                       \"type\": \"mrkdwn\",
-                      \"text\": \"by @${AUTHOR} • <${ARCHIVE_URL}|📋 Compliance Report>\"
+                      \"text\": \"⚠️ *<${PR_URL}|PR #${PR_NUM}>* merged to \`${BASE}\` at *${CONFIDENCE}% compliance*\n${PR_TITLE}\"
                     }
-                  ]
-                }
-              ]
-            }"
+                  },
+                  {
+                    \"type\": \"section\",
+                    \"text\": {
+                      \"type\": \"mrkdwn\",
+                      \"text\": \"${VIOLATIONS}\"
+                    }
+                  },
+                  {
+                    \"type\": \"context\",
+                    \"elements\": [
+                      {
+                        \"type\": \"mrkdwn\",
+                        \"text\": \"merged by @${AUTHOR} • <${ARCHIVE_URL}|📋 Compliance Report>\"
+                      }
+                    ]
+                  }
+                ]
+              }"
+          else
+            # Compliant merge — normal notification
+            curl -s -X POST "$SLACK_WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"blocks\": [
+                  {
+                    \"type\": \"section\",
+                    \"text\": {
+                      \"type\": \"mrkdwn\",
+                      \"text\": \"✅ *<${PR_URL}|PR #${PR_NUM}>* merged to \`${BASE}\` — *${CONFIDENCE}% compliance*\n${PR_TITLE}\"
+                    }
+                  },
+                  {
+                    \"type\": \"context\",
+                    \"elements\": [
+                      {
+                        \"type\": \"mrkdwn\",
+                        \"text\": \"by @${AUTHOR} • <${ARCHIVE_URL}|📋 Compliance Report>\"
+                      }
+                    ]
+                  }
+                ]
+              }"
+          fi
