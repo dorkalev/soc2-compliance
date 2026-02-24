@@ -544,31 +544,10 @@ def build_exempt_system_prompt() -> str:
     pr_title_line = f"- Title: {PR_TITLE}" if PR_TITLE else ""
     pr_author_line = f"- Author: @{PR_AUTHOR}" if PR_AUTHOR else ""
 
-    reviewers_block = ""
-    if REQUIRED_REVIEWERS:
-        names = ", ".join(REQUIRED_REVIEWERS)
-        reviewers_block = f"""
-### 3. Review Tools ({names})
-For each reviewer:
-- First use pr_comments with author_filter to check if they already posted
-  (bot logins: coderabbit → "coderabbitai[bot]", aikido → "aikido-security[bot]", greptile → "greptile[bot]")
-- If they HAVEN'T posted yet, use wait_for_reviewer to wait for them (up to 2 minutes each).
-- Once they've posted, scan for CRITICAL or MAJOR severity findings
-- Use pr_review_threads with state_filter="unresolved" to find open threads
-- A critical/major finding is unresolved if: the thread is unresolved AND the
-  original author is a review bot AND no human replied acknowledging it
-
-**Confidence impact:**
-- Bot posted, all findings resolved → no penalty.
-- Bot posted, unresolved CRITICAL finding → major penalty (~25-30%).
-- Bot posted, unresolved MAJOR finding → moderate penalty (~10-15%).
-- Bot posted, only minor/info findings unresolved → no penalty.
-- Bot didn't post even after waiting → minor penalty (~5%).
-"""
-    else:
-        reviewers_block = """
+    reviewers_block = """
 ### 3. Review Tools
-No required reviewers configured. Skip this check.
+Exempt PRs skip review tool checks. Do NOT check or wait for review bots.
+Set `unresolved_reviews` and `missing_reviewers` to empty arrays.
 """
 
     return f"""You are a SOC2 compliance auditor. This PR has the **compliance:exempt** label, indicating a trivial change (CI config, dependency pin, typo fix, infrastructure update).
@@ -998,6 +977,10 @@ def enforce_policy(findings: dict) -> dict:
             report["issues"].append(
                 "Change is too large or complex for compliance:exempt — create a ticket"
             )
+        else:
+            # Exempt and justified — skip all ticket/review checks, only scope matters
+            report["compliant"] = True
+            return report
 
     # Build human-readable issues list from findings (for the comment)
     if report["invalid_tickets"]:
