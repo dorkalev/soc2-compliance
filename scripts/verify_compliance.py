@@ -372,6 +372,31 @@ def tool_pr_review_threads(state_filter: str | None = None) -> str:
     return "\n\n".join(results) if results else "(no review threads found)"
 
 
+BOT_LOGINS = {
+    "coderabbit": "coderabbitai[bot]",
+    "aikido": "aikido-security[bot]",
+    "greptile": "greptile[bot]",
+}
+
+
+def tool_wait_for_reviewer(reviewer: str, max_wait: int = 120) -> str:
+    """Wait for a review bot to post, polling every 30s. Returns its comments or timeout."""
+    author = BOT_LOGINS.get(reviewer.lower(), f"{reviewer}[bot]")
+    interval = 30
+    elapsed = 0
+
+    while True:
+        result = tool_pr_comments(author_filter=author)
+        if "(no comments found)" not in result:
+            return f"POSTED (found after {elapsed}s):\n{result}"
+        elapsed += interval
+        if elapsed > max_wait:
+            break
+        time.sleep(interval)
+
+    return f"NOT POSTED: {reviewer} did not post within {max_wait}s"
+
+
 # ---------------------------------------------------------------------------
 # Tool registry
 # ---------------------------------------------------------------------------
@@ -384,6 +409,7 @@ TOOL_FUNCTIONS = {
     "linear_ticket": tool_linear_ticket,
     "pr_comments": tool_pr_comments,
     "pr_review_threads": tool_pr_review_threads,
+    "wait_for_reviewer": tool_wait_for_reviewer,
     "submit_report": lambda **kw: "SUBMITTED",  # handled specially in the loop
 }
 
@@ -461,6 +487,18 @@ def _build_tool_declarations():
             ),
         ),
         types.FunctionDeclaration(
+            name="wait_for_reviewer",
+            description="Wait for a review bot to post its review, polling every 30s. Use when a reviewer hasn't posted yet. Pass the short name: 'coderabbit', 'aikido', or 'greptile'.",
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "reviewer": types.Schema(type="STRING", description="Reviewer short name: 'coderabbit', 'aikido', or 'greptile'"),
+                    "max_wait": types.Schema(type="INTEGER", description="Max seconds to wait (default: 120)"),
+                },
+                required=["reviewer"],
+            ),
+        ),
+        types.FunctionDeclaration(
             name="pr_review_threads",
             description="Fetch inline review comment threads with resolution status. Use state_filter='unresolved' to find open issues.",
             parameters=types.Schema(
@@ -501,19 +539,21 @@ def build_system_prompt() -> str:
         reviewers_block = f"""
 ### 5. Review Tools ({names})
 For each reviewer:
-- Use pr_comments with author_filter to check if they posted a review
+- First use pr_comments with author_filter to check if they already posted
   (bot logins: coderabbit → "coderabbitai[bot]", aikido → "aikido-security[bot]", greptile → "greptile[bot]")
-- If they posted, scan for CRITICAL or MAJOR severity findings
+- If they HAVEN'T posted yet, use wait_for_reviewer to wait for them (up to 2 minutes each).
+  The PR might have just been opened and the bots need time to run.
+- Once they've posted, scan for CRITICAL or MAJOR severity findings
 - Use pr_review_threads with state_filter="unresolved" to find open threads
 - A critical/major finding is unresolved if: the thread is unresolved AND the
   original author is a review bot AND no human replied acknowledging it
 
 **Confidence impact:**
-- Bot hasn't posted yet → minor penalty (~5% each). It might be slow or the PR was just opened.
 - Bot posted, all findings resolved → no penalty. Good signal.
 - Bot posted, unresolved CRITICAL finding → major penalty (~25-30%). This is a real risk.
 - Bot posted, unresolved MAJOR finding → moderate penalty (~10-15%).
 - Bot posted, only minor/info findings unresolved → no penalty. These are suggestions.
+- Bot didn't post even after waiting → minor penalty (~5%). It may be down or not configured.
 
 Report: which reviewers posted, which are missing, and any unresolved critical/major findings.
 """
@@ -676,6 +716,14 @@ def annotate_tool_call(comment: LiveComment, name: str, args: dict, result: str)
             else:
                 comment.add_step("✅", "All review threads resolved")
 
+    elif name == "wait_for_reviewer":
+        reviewer = args.get("reviewer", "")
+        if "POSTED" in result:
+            wait_time = result.split("after ")[1].split("s)")[0] if "after " in result else "0"
+            comment.update_last_step("✅", f"**{reviewer}** — review found (waited {wait_time}s)")
+        else:
+            comment.update_last_step("⏳", f"**{reviewer}** — not posted after waiting")
+
     elif name == "submit_report":
         comment.add_step("📋", "Investigation complete — applying policy")
 
@@ -773,6 +821,11 @@ def run_agent(comment: LiveComment) -> dict:
                 except json.JSONDecodeError as e:
                     print(f"Bad JSON in submit_report: {e}", file=sys.stderr)
                     return {"summary": "Agent submitted malformed findings", "tickets_found": []}
+
+            # Pre-annotate long-running tools
+            if name == "wait_for_reviewer":
+                reviewer = args.get("reviewer", "")
+                comment.add_step("⏳", f"Waiting for **{reviewer}**...")
 
             # Execute tool
             fn = TOOL_FUNCTIONS.get(name)
