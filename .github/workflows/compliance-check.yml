@@ -63,6 +63,11 @@ on:
         required: false
         type: string
         default: ""
+      test_exclude_paths:
+        description: "Comma-separated path prefixes to exclude from test coverage checks (e.g., 'xd/,firmware/')"
+        required: false
+        type: string
+        default: ""
     secrets:
       GEMINI_API_KEY:
         required: true
@@ -134,6 +139,7 @@ jobs:
           REQUIRED_REVIEWERS: ${{ inputs.required_reviewers }}
           CONFIDENCE_THRESHOLD: ${{ inputs.confidence_threshold }}
           PR_LABELS: ${{ inputs.pr_labels }}
+          TEST_EXCLUDE_PATHS: ${{ inputs.test_exclude_paths }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |

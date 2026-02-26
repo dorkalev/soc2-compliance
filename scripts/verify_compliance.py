@@ -42,6 +42,9 @@ REQUIRED_REVIEWERS = [
     r.strip() for r in os.environ.get("REQUIRED_REVIEWERS", "").split(",") if r.strip()
 ]
 CONFIDENCE_THRESHOLD = int(os.environ.get("CONFIDENCE_THRESHOLD", "70"))
+TEST_EXCLUDE_PATHS = [
+    p.strip() for p in os.environ.get("TEST_EXCLUDE_PATHS", "").split(",") if p.strip()
+]
 PR_LABELS = [l.strip() for l in os.environ.get("PR_LABELS", "").split(",") if l.strip()]
 EXEMPT = "compliance:exempt" in PR_LABELS
 RUN_ID = os.environ.get("GITHUB_RUN_ID", "")
@@ -381,8 +384,8 @@ def tool_pr_review_threads(state_filter: str | None = None) -> str:
 
 BOT_LOGINS = {
     "coderabbit": "coderabbitai[bot]",
-    "aikido": "aikido-security[bot]",
-    "greptile": "greptile[bot]",
+    "aikido": "aikido-pr-checks[bot]",
+    "greptile": "greptile-apps[bot]",
 }
 
 
@@ -624,7 +627,7 @@ def build_system_prompt() -> str:
 ### 5. Review Tools ({names})
 For each reviewer:
 - First use pr_comments with author_filter to check if they already posted
-  (bot logins: coderabbit → "coderabbitai[bot]", aikido → "aikido-security[bot]", greptile → "greptile[bot]")
+  (bot logins: coderabbit → "coderabbitai[bot]", aikido → "aikido-pr-checks[bot]", greptile → "greptile-apps[bot]")
 - If they HAVEN'T posted yet, use wait_for_reviewer to wait for them (up to 2 minutes each).
   The PR might have just been opened and the bots need time to run.
 - Once they've posted, scan for CRITICAL or MAJOR severity findings
@@ -697,6 +700,7 @@ Work through these checks in order. Use tools to gather evidence — don't guess
   Common patterns: test_foo.py, foo_test.py, foo.test.ts, foo.spec.ts, __tests__/foo.ts
 - Use git_ls_files with patterns like "*test*", "tests/**" to find test files
 - Exclude from this check: config files, docs, migrations, type definitions, static assets
+- Also exclude files under these paths (not unit-testable): {", ".join(TEST_EXCLUDE_PATHS) if TEST_EXCLUDE_PATHS else "(none configured)"}
 - Flag source files that have no corresponding test file AND no test changes in the diff
 {reviewers_block}
 ## Output
