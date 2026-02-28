@@ -188,9 +188,10 @@ jobs:
               report = { compliant: false, summary: 'Agent crashed before reporting', issues: ['Check workflow logs'] };
             }
 
+            const MARKER = '<!-- soc2-compliance-bot -->';
             const sha = '${{ github.event.pull_request.head.sha || github.sha }}'.substring(0, 7);
             const runId = '${{ github.run_id }}';
-            let body = `## ❌ SOC2 Compliance: Failed\n\n`;
+            let body = `${MARKER}\n## ❌ SOC2 Compliance: Failed\n\n`;
             body += `**${report.summary || 'Unknown error'}**\n\n`;
             if (report.issues?.length) {
               report.issues.forEach(i => body += `- ${i}\n`);
@@ -198,12 +199,24 @@ jobs:
             body += `\n---\n\n## 🔧 How to Fix\n\nRun this command in Claude Code:\n\n\`\`\`\n/forge:fix-compliance\n\`\`\`\n\n`;
             body += `---\n<sub>[soc2-compliance](https://github.com/dorkalev/soc2-compliance) · commit ${sha} · [run ${runId}](https://github.com/${{ inputs.repo }}/actions/runs/${runId})</sub>`;
 
-            await github.rest.issues.createComment({
-              owner: '${{ inputs.repo }}'.split('/')[0],
-              repo: '${{ inputs.repo }}'.split('/')[1],
-              issue_number: parseInt('${{ inputs.pr_number }}'),
-              body
-            });
+            const [owner, repo] = '${{ inputs.repo }}'.split('/');
+            const issue_number = parseInt('${{ inputs.pr_number }}');
+
+            // Find existing compliance comment to update
+            let existingId = null;
+            const comments = await github.rest.issues.listComments({ owner, repo, issue_number, per_page: 100 });
+            for (const c of comments.data) {
+              if (c.body && c.body.includes(MARKER)) {
+                existingId = c.id;
+                break;
+              }
+            }
+
+            if (existingId) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existingId, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
 
       - name: Upload compliance report
         if: always()

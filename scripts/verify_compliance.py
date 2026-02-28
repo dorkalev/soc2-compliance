@@ -59,11 +59,14 @@ INITIAL_BACKOFF = 2
 # ---------------------------------------------------------------------------
 # Live PR comment
 # ---------------------------------------------------------------------------
+COMMENT_MARKER = "<!-- soc2-compliance-bot -->"
+
+
 class LiveComment:
     """Manages a single PR comment that updates in-place as the agent works."""
 
     def __init__(self):
-        self.comment_id = None
+        self.comment_id = self._find_existing_comment()
         self.steps: list[str] = []
 
     # -- GitHub helpers --
@@ -88,6 +91,24 @@ class LiveComment:
         except Exception as e:
             print(f"GitHub API ({method} {endpoint}): {e}", file=sys.stderr)
             return None
+
+    def _find_existing_comment(self) -> int | None:
+        """Find an existing SOC2 Compliance comment to update in-place."""
+        if not (GITHUB_TOKEN and REPO and PR_NUMBER):
+            return None
+        page = 1
+        while page <= 10:
+            result = self._api("GET", f"issues/{PR_NUMBER}/comments?per_page=100&page={page}")
+            if not result:
+                break
+            for c in result:
+                if COMMENT_MARKER in (c.get("body") or ""):
+                    print(f"Found existing compliance comment #{c['id']}", file=sys.stderr)
+                    return c["id"]
+            if len(result) < 100:
+                break
+            page += 1
+        return None
 
     def _footer(self):
         parts = ["[soc2-compliance](https://github.com/dorkalev/soc2-compliance)"]
@@ -117,6 +138,8 @@ class LiveComment:
         self._upsert(body)
 
     def _upsert(self, body: str):
+        # Prepend hidden marker so we can find this comment on subsequent runs
+        body = f"{COMMENT_MARKER}\n{body}"
         if self.comment_id:
             self._api("PATCH", f"issues/comments/{self.comment_id}", {"body": body})
         else:
