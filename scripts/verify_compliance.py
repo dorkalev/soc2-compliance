@@ -6,6 +6,7 @@ An AI agent that audits PRs by investigating with tools rather than
 receiving a pre-built context dump. Updates a live PR comment as it works.
 
 Checks:
+  0. Deterministic review gate (fast fail on unresolved major/critical bot findings)
   1. Ticket traceability (Linear → PR → code)
   2. Documentation (issues/ and specs/ files exist and align)
   3. Test coverage (changed source files have tests)
@@ -14,6 +15,7 @@ Checks:
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -38,9 +40,19 @@ TICKET_PATTERN = os.environ.get("TICKET_PATTERN", r"[A-Z]+-\d+")
 ISSUES_PATH = os.environ.get("ISSUES_PATH", "issues")
 SPECS_PATH = os.environ.get("SPECS_PATH", "specs")
 LINEAR_TEAM_ID = os.environ.get("LINEAR_TEAM_ID", "")
-REQUIRED_REVIEWERS = [
-    r.strip() for r in os.environ.get("REQUIRED_REVIEWERS", "").split(",") if r.strip()
+SUPPORTED_REVIEWERS = ("coderabbit", "aikido", "greptile")
+_required_reviewers_raw = [
+    r.strip().lower() for r in os.environ.get("REQUIRED_REVIEWERS", "").split(",") if r.strip()
 ]
+if any(r in {"*", "all"} for r in _required_reviewers_raw):
+    REQUIRED_REVIEWERS = list(SUPPORTED_REVIEWERS)
+else:
+    REQUIRED_REVIEWERS = []
+    _seen_reviewers = set()
+    for r in _required_reviewers_raw:
+        if r in SUPPORTED_REVIEWERS and r not in _seen_reviewers:
+            REQUIRED_REVIEWERS.append(r)
+            _seen_reviewers.add(r)
 CONFIDENCE_THRESHOLD = int(os.environ.get("CONFIDENCE_THRESHOLD", "70"))
 TEST_EXCLUDE_PATHS = [
     p.strip() for p in os.environ.get("TEST_EXCLUDE_PATHS", "").split(",") if p.strip()
@@ -54,6 +66,7 @@ MAX_STEPS = 25
 MAX_TOOL_OUTPUT = 50_000  # chars per tool result
 MAX_RETRIES = 5
 INITIAL_BACKOFF = 2
+REVIEW_GATE_RECHECK_SECONDS = int(os.environ.get("REVIEW_GATE_RECHECK_SECONDS", "180"))
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +425,201 @@ BOT_LOGINS = {
 }
 
 
+def _requested_review_bots() -> list[str]:
+    """Return configured bot short names."""
+    return list(REQUIRED_REVIEWERS)
+
+
+def _severity_for_bot_comment(bot_short: str, body: str) -> str | None:
+    """
+    Classify severity for deterministic early/late review gating.
+    Returns "critical", "major", or None (not blocking for this gate).
+    """
+    text = (body or "").lower()
+
+    if bot_short == "coderabbit":
+        if re.search(r"\bcritical\b", text):
+            return "critical"
+        if re.search(r"\bmajor\b|\bpotential issue\b", text):
+            return "major"
+        return None
+
+    if bot_short == "aikido":
+        if re.search(r"\bcritical\b", text):
+            return "critical"
+        if re.search(r"\bmajor\b|\bhigh\b", text):
+            return "major"
+        return None
+
+    # Greptile comments are treated as major by policy.
+    if bot_short == "greptile":
+        return "major"
+
+    return None
+
+
+def _short_summary(text: str, limit: int = 100) -> str:
+    line = (text or "").strip().split("\n", 1)[0].strip()
+    line = re.sub(r"\s+", " ", line)
+    if not line:
+        return "No summary provided"
+    if len(line) <= limit:
+        return line
+    return line[: limit - 1].rstrip() + "…"
+
+
+def _fetch_review_threads_raw() -> list[dict]:
+    """Fetch raw review threads for deterministic review gating."""
+    if not (GITHUB_TOKEN and REPO and PR_NUMBER):
+        return []
+
+    owner, repo = REPO.split("/", 1)
+    query = """
+    query($owner: String!, $repo: String!, $pr: Int!) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $pr) {
+          reviewThreads(first: 100) {
+            nodes {
+              isResolved
+              comments(first: 20) {
+                nodes {
+                  author { login }
+                  body
+                  path
+                  line
+                }
+              }
+            }
+          }
+        }
+      }
+    }"""
+    resp = httpx.post(
+        "https://api.github.com/graphql",
+        headers={"Authorization": f"Bearer {GITHUB_TOKEN}", "Content-Type": "application/json"},
+        json={"query": query, "variables": {"owner": owner, "repo": repo, "pr": int(PR_NUMBER)}},
+        timeout=20,
+    )
+    resp.raise_for_status()
+    return (
+        resp.json()
+        .get("data", {}).get("repository", {}).get("pullRequest", {})
+        .get("reviewThreads", {}).get("nodes", [])
+    )
+
+
+def collect_blocking_review_findings() -> dict:
+    """
+    Deterministically collect unresolved major/critical findings from review bots.
+    Only configured required reviewers are considered.
+    """
+    configured_bots = _requested_review_bots()
+    if not configured_bots or EXEMPT:
+        return {"unresolved_reviews": [], "error": None}
+
+    login_to_short = {v: k for k, v in BOT_LOGINS.items() if k in configured_bots}
+
+    try:
+        threads = _fetch_review_threads_raw()
+    except Exception as e:
+        return {"unresolved_reviews": [], "error": str(e)}
+
+    unresolved = []
+    for thread in threads:
+        if thread.get("isResolved", False):
+            continue
+
+        comments = thread.get("comments", {}).get("nodes", [])
+        bot_comment = None
+        bot_short = None
+        for c in comments:
+            login = (c.get("author", {}) or {}).get("login", "")
+            if login in login_to_short:
+                bot_comment = c
+                bot_short = login_to_short[login]
+                break
+
+        if not bot_comment or not bot_short:
+            continue
+
+        severity = _severity_for_bot_comment(bot_short, bot_comment.get("body", ""))
+        if not severity:
+            continue
+
+        path = bot_comment.get("path") or "(unknown file)"
+        line = bot_comment.get("line")
+        location = f"{path}:{line}" if line else path
+        summary = _short_summary(bot_comment.get("body", ""))
+        unresolved.append(f"{bot_short} {severity.upper()} on {location}: {summary}")
+
+    return {"unresolved_reviews": unresolved, "error": None}
+
+
+def build_review_gate_failure_report(unresolved_reviews: list[str], phase: str) -> dict:
+    count = len(unresolved_reviews)
+    summary = (
+        f"Fast-failed at {phase} review gate: {count} unresolved major/critical "
+        f"CodeRabbit/Greptile/Aikido finding(s)"
+    )
+    return {
+        "compliant": False,
+        "confidence_percent": 0,
+        "confidence_threshold": CONFIDENCE_THRESHOLD,
+        "summary": summary,
+        "issues": [f"{count} critical/major review finding(s) unresolved"],
+        "tickets_found": [],
+        "invalid_tickets": [],
+        "unspecced_changes": [],
+        "missing_documentation": [],
+        "spec_issues": [],
+        "untested_files": [],
+        "unresolved_reviews": unresolved_reviews,
+        "missing_reviewers": [],
+        "review_gate_phase": phase,
+    }
+
+
+def run_review_gate(comment: LiveComment, phase: str) -> dict | None:
+    """Run deterministic major/critical review gate. Returns failure report or None."""
+    configured_bots = _requested_review_bots()
+    if EXEMPT or not configured_bots:
+        return None
+
+    comment.add_step("🔎", f"Review gate ({phase}) — checking unresolved major/critical bot findings")
+    gate = collect_blocking_review_findings()
+    if gate["error"]:
+        comment.add_step("⚠️", f"Review gate ({phase}) unavailable: {gate['error']}")
+        return None
+
+    unresolved = gate["unresolved_reviews"]
+    if unresolved:
+        comment.add_step(
+            "❌",
+            f"Review gate ({phase}) failed — {len(unresolved)} unresolved major/critical finding(s)",
+        )
+        return build_review_gate_failure_report(unresolved, phase=phase)
+
+    comment.add_step("✅", f"Review gate ({phase}) passed")
+    return None
+
+
+def _is_real_review(result: str, reviewer: str) -> bool:
+    """Check if PR comments contain a real review, not just a placeholder."""
+    if "(no comments found)" in result:
+        return False
+    low = result.lower()
+    # CodeRabbit posts "Currently processing" / "review in progress" placeholders
+    # before the real review which always contains a "Walkthrough" section.
+    if "coderabbit" in reviewer.lower():
+        is_placeholder = (
+            "review in progress by coderabbit" in low
+            or "currently processing" in low
+        )
+        if is_placeholder and "walkthrough" not in low:
+            return False
+    return True
+
+
 def tool_wait_for_reviewer(reviewer: str, max_wait: int = 120) -> str:
     """Wait for a review bot to post, polling every 30s. Returns its comments or timeout."""
     author = BOT_LOGINS.get(reviewer.lower(), f"{reviewer}[bot]")
@@ -420,7 +628,7 @@ def tool_wait_for_reviewer(reviewer: str, max_wait: int = 120) -> str:
 
     while True:
         result = tool_pr_comments(author_filter=author)
-        if "(no comments found)" not in result:
+        if _is_real_review(result, reviewer):
             return f"POSTED (found after {elapsed}s):\n{result}"
         elapsed += interval
         if elapsed > max_wait:
@@ -814,8 +1022,7 @@ def annotate_tool_call(comment: LiveComment, name: str, args: dict, result: str)
         author = args.get("author_filter", "")
         if author:
             bot_name = author.replace("[bot]", "")
-            has = "(no comments found)" not in result
-            if has:
+            if _is_real_review(result, bot_name):
                 comment.add_step("✅", f"**{bot_name}** — review found")
             else:
                 comment.add_step("⏳", f"**{bot_name}** — no review posted")
@@ -1061,10 +1268,39 @@ def main():
         comment.add_step("🔄", "Starting **exempt** compliance audit (lightweight)...")
     else:
         comment.add_step("🔄", "Starting compliance audit...")
+    started_at = time.time()
 
     try:
+        early_gate_failure = run_review_gate(comment, phase="start")
+        if early_gate_failure:
+            report = early_gate_failure
+            comment.finalize(report)
+            print(json.dumps(report, indent=2))
+            return
+
         findings = run_agent(comment)
         report = enforce_policy(findings)
+
+        elapsed = time.time() - started_at
+        if elapsed >= REVIEW_GATE_RECHECK_SECONDS:
+            late_gate_failure = run_review_gate(comment, phase="end")
+            if late_gate_failure:
+                # Preserve existing issues and deterministically fail if new blocking findings appeared.
+                merged_issues = list(report.get("issues", []))
+                merged_issues.append(
+                    f"Late review gate failed after {int(elapsed)}s with "
+                    f"{len(late_gate_failure['unresolved_reviews'])} unresolved major/critical finding(s)"
+                )
+                merged_reviews = list(dict.fromkeys(
+                    list(report.get("unresolved_reviews", []))
+                    + late_gate_failure["unresolved_reviews"]
+                ))
+                report["compliant"] = False
+                report["confidence_percent"] = min(int(report.get("confidence_percent", 0)), 40)
+                report["issues"] = merged_issues
+                report["unresolved_reviews"] = merged_reviews
+                report["summary"] = late_gate_failure["summary"]
+                report["review_gate_phase"] = "end"
     except Exception as e:
         print(f"Agent crashed: {e}", file=sys.stderr)
         report = {

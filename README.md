@@ -7,7 +7,7 @@ AI-powered compliance verification for pull requests. An agent investigates each
 - **Ticket traceability** — verifies PR references valid Linear tickets
 - **Documentation checks** — ensures issue and spec files exist and align with code
 - **Test coverage** — flags changed source files without corresponding tests
-- **Review tool gate** — waits for CodeRabbit/Aikido/Greptile and checks for unresolved findings
+- **Review tool gate** — fast-fails early on unresolved major/critical CodeRabbit/Aikido/Greptile findings, then re-checks at the end on long runs
 - **Confidence scoring** — 0–100% score with configurable pass threshold
 - **Live PR comments** — updates in real-time as the agent investigates
 - **Exempt mode** — lightweight audit for trivial changes via `compliance:exempt` label
@@ -18,13 +18,18 @@ AI-powered compliance verification for pull requests. An agent investigates each
 PR Opened/Updated/Labeled
        │
        ▼
-AI agent starts investigating (Gemini 2.0 Flash)
+Deterministic review gate (start)
+       │
+       ├──► Fail fast if unresolved major/critical bot findings exist
+       ▼
+AI agent investigates (Gemini 2.0 Flash)
        │
        ├──► git diff stat → scope the changes
        ├──► Extract ticket IDs → verify in Linear
        ├──► Check issues/*.md and specs/*.md
        ├──► Find test files for changed source
        ├──► Wait for review bots → check findings
+       ├──► Deterministic review gate (end, only if run >= 3 min)
        │
        ▼
 Post compliance report with confidence score
@@ -73,7 +78,7 @@ jobs:
       base_branch: main
       issues_path: issues
       specs_path: specs
-      required_reviewers: "coderabbit,aikido,greptile"
+      required_reviewers: "*"
       confidence_threshold: 70
       pr_labels: ${{ join(github.event.pull_request.labels.*.name, ',') }}
     secrets:
@@ -100,7 +105,7 @@ Add the compliance job as a required status check on your protected branches.
 | `issues_path` | No | `issues` | Path to issue requirement files |
 | `specs_path` | No | `specs` | Path to technical spec files |
 | `linear_team_id` | No | - | Linear team ID for filtering |
-| `required_reviewers` | No | `""` | Comma-separated review bots (e.g., `coderabbit,aikido,greptile`) |
+| `required_reviewers` | No | `""` | Comma-separated review bots (e.g., `coderabbit,aikido,greptile`) or `*` for all |
 | `confidence_threshold` | No | `70` | Minimum confidence % to pass (0–100) |
 | `pr_labels` | No | `""` | Comma-separated PR labels (for `compliance:exempt` detection) |
 
@@ -228,8 +233,9 @@ export REPO=your-org/your-repo
 export TARGET_REPO=/path/to/repo
 export TICKET_PATTERN="PROJ-[0-9]+"
 export BASE_BRANCH=main
-export REQUIRED_REVIEWERS="coderabbit"
+export REQUIRED_REVIEWERS="*"
 export CONFIDENCE_THRESHOLD=70
+export REVIEW_GATE_RECHECK_SECONDS=180  # optional, default 180s
 
 python scripts/verify_compliance.py
 ```
