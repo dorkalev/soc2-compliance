@@ -487,6 +487,9 @@ def _fetch_review_threads_raw() -> list[dict]:
                   body
                   path
                   line
+                  reactions(first: 10) {
+                    nodes { user { login } }
+                  }
                 }
               }
             }
@@ -524,12 +527,34 @@ def collect_blocking_review_findings() -> dict:
     except Exception as e:
         return {"unresolved_reviews": [], "error": str(e)}
 
+    bot_login_set = set(login_to_short.keys())
+
+    def _thread_acknowledged_by_human(comments: list[dict]) -> bool:
+        """A human replied to or reacted to any comment in the thread."""
+        for c in comments:
+            # Human reply (any non-bot author after the first comment)
+            author = (c.get("author", {}) or {}).get("login", "")
+            if author and author not in bot_login_set and not author.endswith("[bot]"):
+                return True
+            # Human reaction (like/thumbs-up/etc.) on any comment
+            reactions = c.get("reactions", {}).get("nodes", [])
+            for r in reactions:
+                ruser = (r.get("user", {}) or {}).get("login", "")
+                if ruser and ruser not in bot_login_set and not ruser.endswith("[bot]"):
+                    return True
+        return False
+
     unresolved = []
     for thread in threads:
         if thread.get("isResolved", False):
             continue
 
         comments = thread.get("comments", {}).get("nodes", [])
+
+        # If a human replied or reacted, they've acknowledged the finding
+        if _thread_acknowledged_by_human(comments):
+            continue
+
         bot_comment = None
         bot_short = None
         for c in comments:
