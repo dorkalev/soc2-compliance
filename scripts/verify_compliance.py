@@ -161,6 +161,15 @@ class LiveComment:
                 self.comment_id = result["id"]
 
     # -- Final report --
+    def _scorecard_line(self, items: list, pass_label: str, fail_label: str) -> str:
+        """Return a single scorecard line: pass or fail with details."""
+        if not items:
+            return f"  :white_check_mark: {pass_label}\n"
+        line = f"  :x: {fail_label}\n"
+        for item in items:
+            line += f"  - {item}\n"
+        return line
+
     def finalize(self, report: dict):
         compliant = report.get("compliant", False)
         confidence = report.get("confidence_percent", 0)
@@ -171,33 +180,60 @@ class LiveComment:
         exempt_badge = " (exempt)" if is_exempt else ""
         body = f"## {icon} SOC2 Compliance: {confidence}%{exempt_badge}\n\n"
 
-        if compliant:
-            if is_exempt:
-                body += f"Confidence **{confidence}%** (threshold {threshold}%) — exempt PR, lightweight audit passed.\n\n"
-            else:
-                body += f"Confidence **{confidence}%** (threshold {threshold}%) — all checks look good.\n\n"
+        if is_exempt:
+            # Exempt scorecard — minimal
+            body += f"Threshold {threshold}% · exempt PR, lightweight audit\n\n"
+            if not report.get("exempt_justified", True):
+                body += ":x: Change is too large or complex for exemption\n\n"
         else:
-            body += f"Confidence **{confidence}%** (threshold {threshold}%)\n\n"
-            body += "### Issues Found\n\n"
-            for issue in report.get("issues", []):
-                body += f"- {issue}\n"
-            body += "\n"
+            # Full scorecard
+            body += f"Threshold {threshold}%\n\n"
 
-        # Audit trail (always shown)
-        if self.steps:
-            body += "### Audit Trail\n\n"
-            for step in self.steps:
-                body += f"- {step}\n"
-            body += "\n"
+            tickets = report.get("tickets_found", [])
+            invalid = report.get("invalid_tickets", [])
+            unspecced = report.get("unspecced_changes", [])
+            missing_docs = report.get("missing_documentation", [])
+            spec_issues = report.get("spec_issues", [])
+            untested = report.get("untested_files", [])
+            unresolved = report.get("unresolved_reviews", [])
+            missing_rev = report.get("missing_reviewers", [])
 
-        if report.get("tickets_found"):
-            body += f"**Tickets:** {', '.join(report['tickets_found'])}\n\n"
+            # Ticket traceability
+            if tickets and not invalid:
+                body += f"  :white_check_mark: Tickets: {', '.join(tickets)}\n"
+            elif tickets:
+                body += f"  :x: Tickets: {', '.join(tickets)}\n"
+                for t in invalid:
+                    body += f"  - {t}\n"
+            else:
+                body += "  :x: No tickets found\n"
+
+            # Change coverage
+            body += self._scorecard_line(
+                unspecced, "All changes covered by tickets", "Untracked changes"
+            )
+
+            # Documentation
+            body += self._scorecard_line(
+                missing_docs + spec_issues, "Issue & spec files present", "Documentation gaps"
+            )
+
+            # Tests
+            body += self._scorecard_line(
+                untested, "Test coverage", "Missing tests"
+            )
+
+            # Reviews
+            body += self._scorecard_line(
+                unresolved + [f"Missing: {r}" for r in missing_rev],
+                "Reviews clean", "Review issues"
+            )
+
+            body += "\n"
 
         if not compliant:
             body += "---\n\n"
-            body += "## 🔧 How to Fix\n\n"
-            body += "Run this command in Claude Code:\n\n"
-            body += "```\n/forge:fix-compliance\n```\n\n"
+            body += "Fix: run `/forge:fix-compliance` in Claude Code\n\n"
 
         body += self._footer()
         self._upsert(body)
