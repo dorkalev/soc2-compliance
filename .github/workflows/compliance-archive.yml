@@ -96,6 +96,7 @@ jobs:
           PR: #${{ inputs.pr_number }}
           Title: ${{ inputs.pr_title }}"
 
+          git pull --rebase
           git push
 
           # Build the GitHub URL to the file

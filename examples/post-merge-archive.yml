@@ -130,6 +130,7 @@ jobs:
           Title: ${{ github.event.pull_request.title }}
           Merged by: ${{ github.event.pull_request.merged_by.login }}"
 
+          git pull --rebase
           git push
 
           ARCHIVE_URL="https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.base.ref }}/${{ steps.archive.outputs.filepath }}"
