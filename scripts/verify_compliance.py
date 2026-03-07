@@ -865,9 +865,9 @@ Set `unresolved_reviews` and `missing_reviewers` to empty arrays.
 This is a lighter audit. Ticket traceability, issue/spec files, and test coverage are NOT required.
 Instead, verify:
 
-### 0. PR Description
-- The PR description (body) is shown above. If it is empty or very short (under ~20 characters), flag this as "PR description is empty or too brief — poor audit evidence" in missing_documentation.
-- Apply a minor confidence penalty (~5%) for missing descriptions.
+### 0. PR Description (MANDATORY — auto-fail if missing)
+- The PR description (body) is shown above. If it is empty or very short (under ~20 characters), flag this as "PR description is empty or too brief" in missing_documentation.
+- This is a hard requirement — every PR must explain what changed and why, even exempt ones.
 
 ### 1. Scope Validation
 - Use git_diff_stat to see all changed files
@@ -974,15 +974,15 @@ No required reviewers configured. Skip this check.
 
 Work through these checks in order. Use tools to gather evidence — don't guess.
 
-### 0. PR Description
-- The PR description (body) is shown above. If it is empty or very short (under ~20 characters), flag this as "PR description is empty or too brief — poor audit evidence" in missing_documentation.
-- Apply a minor confidence penalty (~5%) for missing descriptions. A PR should explain what changed and why.
+### 0. PR Description (MANDATORY — auto-fail if missing)
+- The PR description (body) is shown above. If it is empty or very short (under ~20 characters), flag this as "PR description is empty or too brief" in missing_documentation.
+- This is a hard requirement — every PR must explain what changed and why. The audit will fail regardless of score if the description is missing.
 
-### 1. Ticket Traceability
+### 1. Ticket Traceability (MANDATORY — auto-fail if no valid ticket)
 - Extract ticket IDs ONLY from the PR title and PR description above (pattern: {TICKET_PATTERN})
 - Do NOT extract tickets from the diff, code comments, deleted lines, or PR review comments
-- If no tickets are found in the title/description, report that — do not go searching for them elsewhere
-- Verify each ticket exists in Linear (use linear_ticket)
+- If no tickets are found in the title/description, report that — do not go searching for them elsewhere.
+- Verify each ticket exists in Linear (use linear_ticket). At least one ticket MUST be verified as real — if all referenced tickets are invalid, the audit fails regardless of score.
 - Use git_diff_stat to see all changed files
 - Verify each ticket has corresponding code changes in the diff
 
@@ -1026,16 +1026,23 @@ When done, call submit_report with a JSON string containing:
 
 Start at 100% and ONLY deduct for concrete, documented issues you found. Use this exact rubric:
 
+### MANDATORY (auto-fail regardless of score)
+These three items are hard requirements. The PR will be rejected even if the score is above the threshold:
+
 | Deduction | Reason |
 |-----------|--------|
-| -5% | PR description empty or too brief |
+| **FAIL** | PR description empty or too brief (under 20 chars) — every PR must explain what changed and why |
+| **FAIL** | No valid Linear ticket — at least one referenced ticket must exist in Linear (authorization) |
+| **FAIL** | Unresolved CRITICAL or MAJOR review finding — all security/quality findings must be resolved |
+
+### Point deductions (affect confidence score)
+| Deduction | Reason |
+|-----------|--------|
 | -10% per ticket | Ticket referenced but not found in Linear |
 | -10% per file | Source file changed with no ticket coverage |
 | -10% per ticket | Missing issues/TICKET.md file |
 | -10% per ticket | Missing or empty spec file |
 | -5% per file | Source file with no corresponding test file |
-| -25% per finding | Unresolved CRITICAL review finding |
-| -15% per finding | Unresolved MAJOR review finding |
 | -5% per reviewer | Required reviewer that didn't post |
 
 If ALL checks pass with no issues, the score MUST be 100%. Do not deduct points for subjective concerns like "spec could be more detailed" or "tests could be more thorough." Only deduct for concrete missing items listed in the rubric above.
@@ -1290,9 +1297,47 @@ def enforce_policy(findings: dict) -> dict:
                 "Change is too large or complex for compliance:exempt — create a ticket"
             )
         else:
-            # Exempt and justified — skip all ticket/review checks, only scope matters
-            report["compliant"] = True
+            # Exempt and justified — skip ticket/doc/test checks, but PR description is still mandatory
+            pr_body_stripped = (PR_BODY or "").strip()
+            if len(pr_body_stripped) < 20:
+                report["compliant"] = False
+                report["issues"].insert(0, "MANDATORY: PR description is empty or too brief (min 20 chars)")
+            else:
+                report["compliant"] = True
             return report
+
+    # -----------------------------------------------------------------------
+    # Mandatory gates — these fail the audit regardless of confidence score
+    # -----------------------------------------------------------------------
+
+    # Gate 1: PR description is mandatory
+    pr_body_stripped = (PR_BODY or "").strip()
+    if len(pr_body_stripped) < 20:
+        report["compliant"] = False
+        report["issues"].insert(0, "MANDATORY: PR description is empty or too brief (min 20 chars)")
+
+    # Gate 2: At least one VALID ticket must exist in Linear
+    tickets = [t for t in findings.get("tickets_found", []) if t.strip()]
+    invalid = findings.get("invalid_tickets", [])
+    if not tickets and not invalid:
+        # No tickets referenced at all
+        report["compliant"] = False
+        report["issues"].insert(0, "MANDATORY: No Linear ticket referenced in PR title or description")
+    elif not tickets and invalid:
+        # Tickets were referenced but ALL are invalid — no real authorization
+        report["compliant"] = False
+        report["issues"].insert(0,
+            "MANDATORY: All referenced tickets are invalid — no verified authorization in Linear"
+        )
+
+    # Gate 3: Unresolved critical/major review findings
+    # (Already enforced by review gate, but also enforce here as a safety net)
+    if report.get("unresolved_reviews"):
+        report["compliant"] = False
+        if not any("critical/major review" in i.lower() for i in report["issues"]):
+            report["issues"].insert(0,
+                f"MANDATORY: {len(report['unresolved_reviews'])} unresolved critical/major review finding(s)"
+            )
 
     # Build human-readable issues list from findings (for the comment)
     if report["invalid_tickets"]:
