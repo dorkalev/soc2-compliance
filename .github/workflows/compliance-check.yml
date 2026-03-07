@@ -84,7 +84,101 @@ on:
         value: ${{ jobs.compliance-audit.outputs.report }}
 
 jobs:
+  wait-for-reviews:
+    # Wait for required review bots to post before running the compliance agent.
+    # This prevents the agent from missing unresolved major/critical findings
+    # because a bot hadn't finished posting yet.
+    if: inputs.required_reviewers != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Wait for review bots
+        env:
+          GH_TOKEN: ${{ secrets.REPO_TOKEN }}
+        run: |
+          PR="${{ inputs.pr_number }}"
+          REPO="${{ inputs.repo }}"
+          REQUIRED="${{ inputs.required_reviewers }}"
+
+          # Map short names to GitHub bot logins
+          declare -A BOT_LOGINS=(
+            ["coderabbit"]="coderabbitai[bot]"
+            ["aikido"]="aikido-pr-checks[bot]"
+            ["greptile"]="greptile-apps[bot]"
+          )
+
+          # Build list of bots to wait for
+          if [ "$REQUIRED" = "*" ]; then
+            BOTS=("coderabbit" "aikido" "greptile")
+          else
+            IFS=',' read -ra BOTS <<< "$REQUIRED"
+          fi
+
+          check_bot() {
+            local bot_name="$1"
+            local bot_login="${BOT_LOGINS[$bot_name]}"
+            if [ -z "$bot_login" ]; then
+              echo "$bot_name: unknown bot, skipping"
+              return 0
+            fi
+
+            # Check issue comments (main thread)
+            COMMENTS=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+              --jq "[.[] | select(.user.login == \"$bot_login\")] | length" 2>/dev/null || echo "0")
+
+            if [ "$COMMENTS" -eq "0" ]; then
+              echo "$bot_name: no comments yet"
+              return 1
+            fi
+
+            # For CodeRabbit: wait for walkthrough (signals full review, not placeholder)
+            if [ "$bot_name" = "coderabbit" ]; then
+              LATEST=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                --jq "[.[] | select(.user.login == \"$bot_login\")] | last | .body" 2>/dev/null || echo "")
+              if echo "$LATEST" | grep -qi "walkthrough"; then
+                echo "$bot_name: review complete"
+                return 0
+              fi
+              if echo "$LATEST" | grep -qi "no files to review\|no changes to review"; then
+                echo "$bot_name: no review needed"
+                return 0
+              fi
+              echo "$bot_name: posted but review still in progress"
+              return 1
+            fi
+
+            echo "$bot_name: review complete ($COMMENTS comments)"
+            return 0
+          }
+
+          # Poll every 30s for up to 10 minutes
+          MAX_ATTEMPTS=20
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            echo "--- Attempt $i/$MAX_ATTEMPTS ---"
+            ALL_DONE=true
+            for bot in "${BOTS[@]}"; do
+              bot=$(echo "$bot" | xargs)  # trim whitespace
+              if ! check_bot "$bot"; then
+                ALL_DONE=false
+              fi
+            done
+
+            if [ "$ALL_DONE" = true ]; then
+              echo "All required reviewers have posted. Proceeding."
+              exit 0
+            fi
+
+            if [ "$i" -lt "$MAX_ATTEMPTS" ]; then
+              echo "Waiting 30s..."
+              sleep 30
+            fi
+          done
+
+          echo "::warning::Timed out waiting for review bots (10 min). Proceeding — agent will flag missing reviews."
+
   compliance-audit:
+    needs: wait-for-reviews
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
