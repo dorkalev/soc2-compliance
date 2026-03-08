@@ -29,11 +29,32 @@ import httpx
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 LINEAR_API_KEY = os.environ.get("LINEAR_API_KEY")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN") or os.environ.get("REPO_TOKEN")
-PR_BODY = os.environ.get("PR_BODY", "")
-PR_TITLE = os.environ.get("PR_TITLE", "")
-PR_AUTHOR = os.environ.get("PR_AUTHOR", "")
 PR_NUMBER = os.environ.get("PR_NUMBER", "")
 REPO = os.environ.get("REPO", "")
+
+
+def _fetch_pr_metadata() -> tuple[str, str, str]:
+    """Fetch PR body/title/author from GitHub API if not provided via env."""
+    body = os.environ.get("PR_BODY", "")
+    title = os.environ.get("PR_TITLE", "")
+    author = os.environ.get("PR_AUTHOR", "")
+    if (body and title) or not (GITHUB_TOKEN and REPO and PR_NUMBER):
+        return body, title, author
+    try:
+        resp = httpx.get(
+            f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}",
+            headers={"Authorization": f"token {GITHUB_TOKEN}"},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return data.get("body", "") or "", data.get("title", "") or "", data.get("user", {}).get("login", "") or ""
+    except Exception:
+        pass
+    return body, title, author
+
+
+PR_BODY, PR_TITLE, PR_AUTHOR = _fetch_pr_metadata()
 TARGET_REPO = os.environ.get("TARGET_REPO", ".")
 BASE_BRANCH = os.environ.get("BASE_BRANCH", "main")
 TICKET_PATTERN = os.environ.get("TICKET_PATTERN", r"[A-Z]+-\d+")

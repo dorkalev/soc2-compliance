@@ -4,19 +4,25 @@ on:
   workflow_call:
     inputs:
       pr_body:
-        description: "Pull request body text"
-        required: true
+        description: "Pull request body text (fetched from API if empty)"
+        required: false
         type: string
+        default: ""
       pr_title:
-        description: "Pull request title"
+        description: "Pull request title (fetched from API if empty)"
         required: false
         type: string
         default: ""
       pr_author:
-        description: "Pull request author login"
+        description: "Pull request author login (fetched from API if empty)"
         required: false
         type: string
         default: ""
+      skip_review_wait:
+        description: "Skip waiting for review bots (use when triggered by bot completion event)"
+        required: false
+        type: boolean
+        default: false
       pr_number:
         description: "Pull request number"
         required: true
@@ -86,9 +92,8 @@ on:
 jobs:
   wait-for-reviews:
     # Wait for required review bots to post before running the compliance agent.
-    # This prevents the agent from missing unresolved major/critical findings
-    # because a bot hadn't finished posting yet.
-    if: inputs.required_reviewers != ''
+    # Skipped when triggered by a bot completion event (skip_review_wait=true).
+    if: inputs.required_reviewers != '' && !inputs.skip_review_wait
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
@@ -122,28 +127,45 @@ jobs:
               return 0
             fi
 
-            # Check issue comments (main thread)
-            COMMENTS=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-              --jq "[.[] | select(.user.login == \"$bot_login\")] | length" 2>/dev/null || echo "0")
-
-            if [ "$COMMENTS" -eq "0" ]; then
-              echo "$bot_name: no comments yet"
-              return 1
-            fi
-
-            # For CodeRabbit: wait for walkthrough (signals full review, not placeholder)
+            # For CodeRabbit: use commit status (requires reviews.commit_status: true in .coderabbit.yaml)
             if [ "$bot_name" = "coderabbit" ]; then
+              HEAD_SHA=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha' 2>/dev/null || echo "")
+              if [ -n "$HEAD_SHA" ]; then
+                CR_STATE=$(gh api "repos/$REPO/commits/$HEAD_SHA/statuses" \
+                  --jq '[.[] | select(.context == "CodeRabbit")] | first | .state' 2>/dev/null || echo "")
+                if [ "$CR_STATE" = "success" ]; then
+                  echo "$bot_name: review complete (commit status: success)"
+                  return 0
+                elif [ "$CR_STATE" = "pending" ]; then
+                  echo "$bot_name: review in progress (commit status: pending)"
+                  return 1
+                fi
+              fi
+              # Fallback to comment check if commit status not available
               LATEST=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
                 --jq "[.[] | select(.user.login == \"$bot_login\")] | last | .body" 2>/dev/null || echo "")
               if echo "$LATEST" | grep -qi "walkthrough"; then
-                echo "$bot_name: review complete"
+                echo "$bot_name: review complete (comment fallback)"
                 return 0
               fi
               if echo "$LATEST" | grep -qi "no files to review\|no changes to review"; then
                 echo "$bot_name: no review needed"
                 return 0
               fi
-              echo "$bot_name: posted but review still in progress"
+              if [ -n "$LATEST" ]; then
+                echo "$bot_name: posted but review still in progress"
+                return 1
+              fi
+              echo "$bot_name: no status or comments yet"
+              return 1
+            fi
+
+            # Other bots: check issue comments (main thread)
+            COMMENTS=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+              --jq "[.[] | select(.user.login == \"$bot_login\")] | length" 2>/dev/null || echo "0")
+
+            if [ "$COMMENTS" -eq "0" ]; then
+              echo "$bot_name: no comments yet"
               return 1
             fi
 
