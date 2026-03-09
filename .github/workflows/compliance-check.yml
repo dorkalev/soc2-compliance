@@ -354,7 +354,7 @@ jobs:
           echo "::error::$SUMMARY"
           echo ""
 
-          for field in issues invalid_tickets unspecced_changes missing_documentation untested_files unresolved_reviews missing_reviewers spec_issues; do
+          for field in issues invalid_tickets unspecced_changes missing_documentation untested_files unresolved_reviews dismissed_reviews missing_reviewers spec_issues; do
             COUNT=$(jq -r ".$field | length" compliance_report.json 2>/dev/null || echo "0")
             if [ "$COUNT" != "0" ] && [ "$COUNT" != "null" ]; then
               LABEL=$(echo "$field" | tr '_' ' ')

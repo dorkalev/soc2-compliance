@@ -22,6 +22,8 @@ jobs:
       compliant: ${{ steps.archive.outputs.compliant }}
       confidence: ${{ steps.archive.outputs.confidence }}
       violations: ${{ steps.archive.outputs.violations }}
+      dismissed_count: ${{ steps.archive.outputs.dismissed_count }}
+      dismissed_summary: ${{ steps.archive.outputs.dismissed_summary }}
 
     steps:
       - name: Checkout target branch
@@ -104,10 +106,23 @@ jobs:
           EOF
           fi
 
+          # Extract dismissed review findings
+          if [ -f "./artifact/compliance_report.json" ]; then
+            DISMISSED_COUNT=$(jq '[(.dismissed_reviews // [])[] ] | length' ./artifact/compliance_report.json 2>/dev/null || echo "0")
+            DISMISSED_SUMMARY=$(jq -r '
+              [(.dismissed_reviews // [])[0:3][]] | if length == 0 then "" else join(" · ") end
+            ' ./artifact/compliance_report.json 2>/dev/null || echo "")
+          else
+            DISMISSED_COUNT="0"
+            DISMISSED_SUMMARY=""
+          fi
+
           echo "compliant=$COMPLIANT" >> $GITHUB_OUTPUT
           echo "confidence=$CONFIDENCE" >> $GITHUB_OUTPUT
           echo "violations=$VIOLATIONS" >> $GITHUB_OUTPUT
           echo "filepath=$FILEPATH" >> $GITHUB_OUTPUT
+          echo "dismissed_count=$DISMISSED_COUNT" >> $GITHUB_OUTPUT
+          echo "dismissed_summary=$DISMISSED_SUMMARY" >> $GITHUB_OUTPUT
 
       - name: Commit and push archive
         id: commit
@@ -158,6 +173,14 @@ jobs:
           COMPLIANT="${{ needs.archive.outputs.compliant }}"
           CONFIDENCE="${{ needs.archive.outputs.confidence }}"
           VIOLATIONS="${{ needs.archive.outputs.violations }}"
+          DISMISSED_COUNT="${{ needs.archive.outputs.dismissed_count }}"
+          DISMISSED_SUMMARY="${{ needs.archive.outputs.dismissed_summary }}"
+
+          # Build dismissed findings snippet for Slack
+          DISMISSED_LINE=""
+          if [ "${DISMISSED_COUNT:-0}" -gt 0 ] 2>/dev/null; then
+            DISMISSED_LINE="\\n⚠️ ${DISMISSED_COUNT} dismissed review finding(s): ${DISMISSED_SUMMARY}"
+          fi
 
           if [ "$COMPLIANT" = "false" ]; then
             # Non-compliant merge — alert
@@ -169,7 +192,7 @@ jobs:
                     \"type\": \"section\",
                     \"text\": {
                       \"type\": \"mrkdwn\",
-                      \"text\": \"⚠️ *<${PR_URL}|PR #${PR_NUM}>* merged to \`${BASE}\` at *${CONFIDENCE}% compliance*\n${PR_TITLE}\"
+                      \"text\": \"⚠️ *<${PR_URL}|PR #${PR_NUM}>* merged to \`${BASE}\` at *${CONFIDENCE}% compliance*\n${PR_TITLE}${DISMISSED_LINE}\"
                     }
                   },
                   {
@@ -200,7 +223,7 @@ jobs:
                     \"type\": \"section\",
                     \"text\": {
                       \"type\": \"mrkdwn\",
-                      \"text\": \"✅ *<${PR_URL}|PR #${PR_NUM}>* merged to \`${BASE}\` — *${CONFIDENCE}% compliance*\n${PR_TITLE}\"
+                      \"text\": \"✅ *<${PR_URL}|PR #${PR_NUM}>* merged to \`${BASE}\` — *${CONFIDENCE}% compliance*\n${PR_TITLE}${DISMISSED_LINE}\"
                     }
                   },
                   {

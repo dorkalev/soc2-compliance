@@ -244,6 +244,13 @@ class LiveComment:
                 untested, "Test coverage", "Missing tests"
             )
 
+            # Dismissed reviews (resolved without code fix)
+            dismissed = report.get("dismissed_reviews", [])
+            if dismissed:
+                body += f"  :warning: {len(dismissed)} dismissed review finding(s) (resolved without code fix)\n"
+                for d in dismissed:
+                    body += f"  - {d}\n"
+
             # Reviews
             body += self._scorecard_line(
                 unresolved + [f"Missing: {r}" for r in missing_rev],
@@ -568,21 +575,32 @@ def _fetch_review_threads_raw() -> list[dict]:
     )
 
 
+def _extract_human_response(comments: list[dict], bot_login_set: set[str]) -> str:
+    """Extract first human reply text from a review thread (for audit context)."""
+    for c in comments:
+        author = (c.get("author", {}) or {}).get("login", "")
+        if author and author not in bot_login_set and not author.endswith("[bot]"):
+            return _short_summary(c.get("body", ""), limit=80)
+    return ""
+
+
 def collect_blocking_review_findings() -> dict:
     """
     Deterministically collect unresolved major/critical findings from review bots.
+    Also collects dismissed findings: resolved threads where a human replied but
+    no code fix was made (bot CRITICAL/MAJOR only).
     Only configured required reviewers are considered.
     """
     configured_bots = _requested_review_bots()
     if not configured_bots or EXEMPT:
-        return {"unresolved_reviews": [], "error": None}
+        return {"unresolved_reviews": [], "dismissed_reviews": [], "error": None}
 
     login_to_short = {v: k for k, v in BOT_LOGINS.items() if k in configured_bots}
 
     try:
         threads = _fetch_review_threads_raw()
     except Exception as e:
-        return {"unresolved_reviews": [], "error": str(e)}
+        return {"unresolved_reviews": [], "dismissed_reviews": [], "error": str(e)}
 
     bot_login_set = set(login_to_short.keys())
 
@@ -602,16 +620,12 @@ def collect_blocking_review_findings() -> dict:
         return False
 
     unresolved = []
+    dismissed = []
     for thread in threads:
-        if thread.get("isResolved", False):
-            continue
-
         comments = thread.get("comments", {}).get("nodes", [])
+        is_resolved = thread.get("isResolved", False)
 
-        # If a human replied or reacted, they've acknowledged the finding
-        if _thread_acknowledged_by_human(comments):
-            continue
-
+        # Find the bot comment and its severity
         bot_comment = None
         bot_short = None
         for c in comments:
@@ -632,12 +646,29 @@ def collect_blocking_review_findings() -> dict:
         line = bot_comment.get("line")
         location = f"{path}:{line}" if line else path
         summary = _short_summary(bot_comment.get("body", ""))
+
+        if is_resolved:
+            # Resolved thread — check if human replied (dismissed without code fix)
+            if _thread_acknowledged_by_human(comments):
+                human_text = _extract_human_response(comments, bot_login_set)
+                entry = f"{bot_short} {severity.upper()} on {location}: {summary}"
+                if human_text:
+                    entry += f" | Developer: {human_text}"
+                dismissed.append(entry)
+            continue
+
+        # Unresolved thread — if human acknowledged, skip (existing behavior)
+        if _thread_acknowledged_by_human(comments):
+            continue
+
         unresolved.append(f"{bot_short} {severity.upper()} on {location}: {summary}")
 
-    return {"unresolved_reviews": unresolved, "error": None}
+    return {"unresolved_reviews": unresolved, "dismissed_reviews": dismissed, "error": None}
 
 
-def build_review_gate_failure_report(unresolved_reviews: list[str], phase: str) -> dict:
+def build_review_gate_failure_report(
+    unresolved_reviews: list[str], phase: str, dismissed_reviews: list[str] | None = None,
+) -> dict:
     count = len(unresolved_reviews)
     summary = (
         f"Fast-failed at {phase} review gate: {count} unresolved major/critical "
@@ -656,33 +687,73 @@ def build_review_gate_failure_report(unresolved_reviews: list[str], phase: str) 
         "spec_issues": [],
         "untested_files": [],
         "unresolved_reviews": unresolved_reviews,
+        "dismissed_reviews": dismissed_reviews or [],
         "missing_reviewers": [],
         "review_gate_phase": phase,
     }
 
 
-def run_review_gate(comment: LiveComment, phase: str) -> dict | None:
-    """Run deterministic major/critical review gate. Returns failure report or None."""
+def apply_dismissed_review_deductions(report: dict) -> None:
+    """Deduct points for dismissed review findings (resolved without code fix).
+
+    Each dismissed MAJOR: -3%, each dismissed CRITICAL: -5%.
+    Non-blocking (won't auto-fail), but prevents 100%.
+    """
+    dismissed = report.get("dismissed_reviews", [])
+    if not dismissed:
+        return
+
+    deduction = 0
+    for entry in dismissed:
+        if " CRITICAL " in entry:
+            deduction += 5
+        else:
+            deduction += 3
+
+    if deduction > 0:
+        current = report.get("confidence_percent", 100)
+        report["confidence_percent"] = max(0, current - deduction)
+        report["issues"].append(
+            f"{len(dismissed)} dismissed review finding(s) (resolved without code fix)"
+        )
+        # Re-evaluate compliance after deduction
+        if report["confidence_percent"] < report.get("confidence_threshold", CONFIDENCE_THRESHOLD):
+            report["compliant"] = False
+
+
+def run_review_gate(comment: LiveComment, phase: str) -> tuple[dict | None, list[str]]:
+    """Run deterministic major/critical review gate.
+
+    Returns (failure_report_or_None, dismissed_findings_list).
+    """
     configured_bots = _requested_review_bots()
     if EXEMPT or not configured_bots:
-        return None
+        return None, []
 
     comment.add_step("🔎", f"Review gate ({phase}) — checking unresolved major/critical bot findings")
     gate = collect_blocking_review_findings()
     if gate["error"]:
         comment.add_step("⚠️", f"Review gate ({phase}) unavailable: {gate['error']}")
-        return None
+        return None, []
 
     unresolved = gate["unresolved_reviews"]
+    dismissed = gate.get("dismissed_reviews", [])
+
+    if dismissed:
+        comment.add_step(
+            "⚠️",
+            f"Review gate ({phase}) — {len(dismissed)} dismissed review finding(s) (resolved without code fix)",
+        )
+
     if unresolved:
         comment.add_step(
             "❌",
             f"Review gate ({phase}) failed — {len(unresolved)} unresolved major/critical finding(s)",
         )
-        return build_review_gate_failure_report(unresolved, phase=phase)
+        return build_review_gate_failure_report(unresolved, phase=phase, dismissed_reviews=dismissed), dismissed
 
     comment.add_step("✅", f"Review gate ({phase}) passed")
-    return None
+    return None, dismissed
 
 
 def _is_real_review(result: str, reviewer: str) -> bool:
@@ -1304,6 +1375,7 @@ def enforce_policy(findings: dict) -> dict:
         "spec_issues": findings.get("spec_issues", []),
         "untested_files": findings.get("untested_files", []),
         "unresolved_reviews": findings.get("unresolved_reviews", []),
+        "dismissed_reviews": findings.get("dismissed_reviews", []),
         "missing_reviewers": findings.get("missing_reviewers", []),
     }
 
@@ -1415,9 +1487,14 @@ def main():
     started_at = time.time()
 
     try:
-        early_gate_failure = run_review_gate(comment, phase="start")
+        all_dismissed: list[str] = []
+
+        early_gate_failure, early_dismissed = run_review_gate(comment, phase="start")
+        all_dismissed.extend(early_dismissed)
         if early_gate_failure:
             report = early_gate_failure
+            # Still apply dismissed deductions even on gate failure
+            apply_dismissed_review_deductions(report)
             comment.finalize(report)
             print(json.dumps(report, indent=2))
             return
@@ -1427,7 +1504,8 @@ def main():
 
         elapsed = time.time() - started_at
         if elapsed >= REVIEW_GATE_RECHECK_SECONDS:
-            late_gate_failure = run_review_gate(comment, phase="end")
+            late_gate_failure, late_dismissed = run_review_gate(comment, phase="end")
+            all_dismissed.extend(late_dismissed)
             if late_gate_failure:
                 # Preserve existing issues and deterministically fail if new blocking findings appeared.
                 merged_issues = list(report.get("issues", []))
@@ -1445,6 +1523,14 @@ def main():
                 report["unresolved_reviews"] = merged_reviews
                 report["summary"] = late_gate_failure["summary"]
                 report["review_gate_phase"] = "end"
+
+        # Merge dismissed findings from review gates into report
+        if all_dismissed:
+            existing = report.get("dismissed_reviews", [])
+            report["dismissed_reviews"] = list(dict.fromkeys(existing + all_dismissed))
+
+        # Apply score deductions for dismissed reviews
+        apply_dismissed_review_deductions(report)
     except Exception as e:
         print(f"Agent crashed: {e}", file=sys.stderr)
         report = {
