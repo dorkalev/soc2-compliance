@@ -1452,6 +1452,13 @@ def enforce_policy(findings: dict) -> dict:
             "MANDATORY: Required reviewer(s) not posted: " + ", ".join(report["missing_reviewers"])
         )
 
+    # If any mandatory gate failed, cap the score at 55% (always below threshold)
+    mandatory_failed = any(i.startswith("MANDATORY:") for i in report["issues"])
+    if mandatory_failed and confidence > 55:
+        confidence = 55
+        report["confidence_percent"] = confidence
+        report["compliant"] = False
+
     # Build human-readable issues list from findings (for the comment)
     if report["invalid_tickets"]:
         report["issues"].append(
