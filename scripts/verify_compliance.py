@@ -764,6 +764,9 @@ def _is_real_review(result: str, reviewer: str) -> bool:
     # CodeRabbit posts "Currently processing" / "review in progress" placeholders
     # before the real review which always contains a "Walkthrough" section.
     if "coderabbit" in reviewer.lower():
+        # "Reviews paused" is never a real review, even if walkthrough is present
+        if "reviews paused" in low:
+            return False
         is_placeholder = (
             "review in progress by coderabbit" in low
             or "currently processing" in low
@@ -1350,17 +1353,26 @@ def run_agent(comment: LiveComment) -> dict:
 # ---------------------------------------------------------------------------
 # Policy enforcement (deterministic — not up to the LLM)
 # ---------------------------------------------------------------------------
+def _calculate_score(findings: dict) -> int:
+    """Deterministic score from findings — mirrors the prompt rubric exactly."""
+    score = 100
+    score -= 10 * len(findings.get("invalid_tickets", []))
+    score -= 10 * len(findings.get("unspecced_changes", []))
+    score -= 10 * len(findings.get("missing_documentation", []))
+    score -= 10 * len(findings.get("spec_issues", []))
+    score -= 5 * len(findings.get("untested_files", []))
+    score -= 5 * len(findings.get("missing_reviewers", []))
+    return max(0, min(100, score))
+
+
 def enforce_policy(findings: dict) -> dict:
     """Apply confidence threshold to agent findings. Returns the final report."""
-    confidence = findings.get("confidence_percent", 0)
+    agent_score = findings.get("confidence_percent", 0)
+    confidence = _calculate_score(findings)
 
-    # Clamp to 0-100
-    if not isinstance(confidence, (int, float)):
-        try:
-            confidence = int(confidence)
-        except (ValueError, TypeError):
-            confidence = 0
-    confidence = max(0, min(100, int(confidence)))
+    # Log discrepancy between agent's score and deterministic recalculation
+    if agent_score != confidence:
+        print(f"Score override: agent={agent_score}% → deterministic={confidence}%", file=sys.stderr)
 
     report = {
         "compliant": confidence >= CONFIDENCE_THRESHOLD,
