@@ -1444,6 +1444,13 @@ def enforce_policy(findings: dict) -> dict:
                 f"MANDATORY: {len(report['unresolved_reviews'])} unresolved critical/major review finding(s)"
             )
 
+    # Gate 4: Required reviewers must have posted a real review
+    if report.get("missing_reviewers"):
+        report["compliant"] = False
+        report["issues"].insert(0,
+            "MANDATORY: Required reviewer(s) not posted: " + ", ".join(report["missing_reviewers"])
+        )
+
     # Build human-readable issues list from findings (for the comment)
     if report["invalid_tickets"]:
         report["issues"].append(
