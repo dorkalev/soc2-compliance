@@ -199,7 +199,8 @@ class LiveComment:
         icon = "✅" if compliant else "❌"
 
         exempt_badge = " (exempt)" if is_exempt else ""
-        body = f"## {icon} SOC2 Compliance: {confidence}%{exempt_badge}\n\n"
+        partial_badge = " · partial (no review check)" if not REQUIRED_REVIEWERS and not is_exempt else ""
+        body = f"## {icon} SOC2 Compliance: {confidence}%{exempt_badge}{partial_badge}\n\n"
 
         if is_exempt:
             # Exempt scorecard — minimal
