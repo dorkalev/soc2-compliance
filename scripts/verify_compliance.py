@@ -1366,8 +1366,20 @@ def _calculate_score(findings: dict) -> int:
     return max(0, min(100, score))
 
 
+def _filter_excluded_paths(files: list, exclude_paths: list) -> list:
+    """Remove files matching TEST_EXCLUDE_PATHS from the untested list."""
+    if not exclude_paths:
+        return files
+    return [f for f in files if not any(f.startswith(p) or f.split(":")[0].startswith(p) for p in exclude_paths)]
+
+
 def enforce_policy(findings: dict) -> dict:
     """Apply confidence threshold to agent findings. Returns the final report."""
+    # Filter untested files against TEST_EXCLUDE_PATHS before scoring
+    findings["untested_files"] = _filter_excluded_paths(
+        findings.get("untested_files", []), TEST_EXCLUDE_PATHS
+    )
+
     agent_score = findings.get("confidence_percent", 0)
     confidence = _calculate_score(findings)
 
