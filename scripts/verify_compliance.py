@@ -100,7 +100,8 @@ class LiveComment:
     """Manages a single PR comment that updates in-place as the agent works."""
 
     def __init__(self):
-        self.comment_id = self._find_existing_comment()
+        self._delete_existing_comments()
+        self.comment_id = None
         self.steps: list[str] = []
 
     # -- GitHub helpers --
@@ -115,7 +116,7 @@ class LiveComment:
             "X-GitHub-Api-Version": "2022-11-28",
         }
         try:
-            fn = {"POST": httpx.post, "PATCH": httpx.patch, "GET": httpx.get}[method]
+            fn = {"POST": httpx.post, "PATCH": httpx.patch, "GET": httpx.get, "DELETE": httpx.delete}[method]
             kw = {"headers": headers, "timeout": 15}
             if body:
                 kw["json"] = body
@@ -126,10 +127,10 @@ class LiveComment:
             print(f"GitHub API ({method} {endpoint}): {e}", file=sys.stderr)
             return None
 
-    def _find_existing_comment(self) -> int | None:
-        """Find an existing SOC2 Compliance comment to update in-place."""
+    def _delete_existing_comments(self):
+        """Delete any existing SOC2 Compliance comments so the new one appears at the bottom."""
         if not (GITHUB_TOKEN and REPO and PR_NUMBER):
-            return None
+            return
         page = 1
         while page <= 10:
             result = self._api("GET", f"issues/{PR_NUMBER}/comments?per_page=100&page={page}")
@@ -137,12 +138,11 @@ class LiveComment:
                 break
             for c in result:
                 if COMMENT_MARKER in (c.get("body") or ""):
-                    print(f"Found existing compliance comment #{c['id']}", file=sys.stderr)
-                    return c["id"]
+                    print(f"Deleting old compliance comment #{c['id']}", file=sys.stderr)
+                    self._api("DELETE", f"issues/comments/{c['id']}")
             if len(result) < 100:
                 break
             page += 1
-        return None
 
     def _footer(self):
         parts = ["[soc2-compliance](https://github.com/dorkalev/soc2-compliance)"]

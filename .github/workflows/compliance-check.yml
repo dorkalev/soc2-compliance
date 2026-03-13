@@ -203,21 +203,15 @@ jobs:
             const [owner, repo] = '${{ inputs.repo }}'.split('/');
             const issue_number = parseInt('${{ inputs.pr_number }}');
 
-            // Find existing compliance comment to update
-            let existingId = null;
+            // Delete existing compliance comments so the new one appears at the bottom
             const comments = await github.rest.issues.listComments({ owner, repo, issue_number, per_page: 100 });
             for (const c of comments.data) {
               if (c.body && c.body.includes(MARKER)) {
-                existingId = c.id;
-                break;
+                await github.rest.issues.deleteComment({ owner, repo, comment_id: c.id });
               }
             }
 
-            if (existingId) {
-              await github.rest.issues.updateComment({ owner, repo, comment_id: existingId, body });
-            } else {
-              await github.rest.issues.createComment({ owner, repo, issue_number, body });
-            }
+            await github.rest.issues.createComment({ owner, repo, issue_number, body });
 
       - name: Upload compliance report
         if: always()
