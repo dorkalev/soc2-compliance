@@ -284,10 +284,11 @@ class LiveComment:
                     body += f"  - {d}\n"
 
             # Reviews
-            body += self._scorecard_line(
-                unresolved + [f"Missing: {r}" for r in missing_rev],
-                "Reviews clean", "Review issues"
-            )
+            if not review_pending:
+                body += self._scorecard_line(
+                    unresolved + [f"Missing: {r}" for r in missing_rev],
+                    "Reviews clean", "Review issues"
+                )
 
             body += "\n"
 
@@ -751,6 +752,15 @@ def apply_dismissed_review_deductions(report: dict) -> None:
         # Re-evaluate compliance after deduction
         if report["confidence_percent"] < report.get("confidence_threshold", CONFIDENCE_THRESHOLD):
             report["compliant"] = False
+
+
+def strip_review_findings_for_pending_phase(findings: dict) -> dict:
+    """Drop review-derived findings when the review gate has not completed yet."""
+    sanitized = dict(findings)
+    sanitized["unresolved_reviews"] = []
+    sanitized["dismissed_reviews"] = []
+    sanitized["missing_reviewers"] = []
+    return sanitized
 
 
 def run_review_gate(comment: LiveComment, phase: str) -> tuple[dict | None, list[str]]:
@@ -1406,6 +1416,10 @@ def _filter_excluded_paths(files: list, exclude_paths: list) -> list:
 
 def enforce_policy(findings: dict) -> dict:
     """Apply confidence threshold to agent findings. Returns the final report."""
+    findings = dict(findings)
+    if REVIEW_CHECK_PENDING:
+        findings = strip_review_findings_for_pending_phase(findings)
+
     # Filter untested files against TEST_EXCLUDE_PATHS before scoring
     findings["untested_files"] = _filter_excluded_paths(
         findings.get("untested_files", []), TEST_EXCLUDE_PATHS
