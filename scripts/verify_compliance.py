@@ -74,12 +74,31 @@ else:
         if r in SUPPORTED_REVIEWERS and r not in _seen_reviewers:
             REQUIRED_REVIEWERS.append(r)
             _seen_reviewers.add(r)
+_expected_reviewers_raw = [
+    r.strip().lower() for r in os.environ.get("EXPECTED_REVIEWERS", "").split(",") if r.strip()
+]
+if any(r in {"*", "all"} for r in _expected_reviewers_raw):
+    EXPECTED_REVIEWERS = list(SUPPORTED_REVIEWERS)
+else:
+    EXPECTED_REVIEWERS = []
+    _seen_expected_reviewers = set()
+    for r in _expected_reviewers_raw:
+        if r in SUPPORTED_REVIEWERS and r not in _seen_expected_reviewers:
+            EXPECTED_REVIEWERS.append(r)
+            _seen_expected_reviewers.add(r)
 CONFIDENCE_THRESHOLD = int(os.environ.get("CONFIDENCE_THRESHOLD", "70"))
 TEST_EXCLUDE_PATHS = [
     p.strip() for p in os.environ.get("TEST_EXCLUDE_PATHS", "").split(",") if p.strip()
 ]
 PR_LABELS = [l.strip() for l in os.environ.get("PR_LABELS", "").split(",") if l.strip()]
 EXEMPT = "compliance:exempt" in PR_LABELS
+REVIEW_PHASE = os.environ.get("REVIEW_PHASE", "final").strip().lower() or "final"
+REVIEW_CHECK_PENDING = (
+    not EXEMPT
+    and REVIEW_PHASE in {"awaiting-review", "pre-review"}
+    and bool(EXPECTED_REVIEWERS)
+    and not bool(REQUIRED_REVIEWERS)
+)
 RUN_ID = os.environ.get("GITHUB_RUN_ID", "")
 COMMIT_SHA = os.environ.get("COMMIT_SHA", "")[:7]
 
@@ -196,11 +215,23 @@ class LiveComment:
         confidence = report.get("confidence_percent", 0)
         threshold = report.get("confidence_threshold", CONFIDENCE_THRESHOLD)
         is_exempt = report.get("exempt", False)
-        icon = "✅" if compliant else "❌"
+        review_pending = report.get("review_check_pending", False)
+        expected_reviewers = report.get("expected_reviewers", [])
+        icon = "⏳" if review_pending else ("✅" if compliant else "❌")
 
         exempt_badge = " (exempt)" if is_exempt else ""
-        partial_badge = " · partial (no review check)" if not REQUIRED_REVIEWERS and not is_exempt else ""
-        body = f"## {icon} SOC2 Compliance: {confidence}%{exempt_badge}{partial_badge}\n\n"
+        if review_pending:
+            body = "## ⏳ SOC2 Compliance: review pending\n\n"
+            if expected_reviewers:
+                body += (
+                    "Final compliance scoring is blocked until required review posts: "
+                    + ", ".join(expected_reviewers)
+                    + "\n\n"
+                )
+            body += "Current findings below exclude review-tool results.\n\n"
+        else:
+            partial_badge = " · partial (no review check)" if not REQUIRED_REVIEWERS and not is_exempt else ""
+            body = f"## {icon} SOC2 Compliance: {confidence}%{exempt_badge}{partial_badge}\n\n"
 
         if is_exempt:
             # Exempt scorecard — minimal
@@ -1402,6 +1433,8 @@ def enforce_policy(findings: dict) -> dict:
         "unresolved_reviews": findings.get("unresolved_reviews", []),
         "dismissed_reviews": findings.get("dismissed_reviews", []),
         "missing_reviewers": findings.get("missing_reviewers", []),
+        "review_check_pending": REVIEW_CHECK_PENDING,
+        "expected_reviewers": EXPECTED_REVIEWERS,
     }
 
     # Exempt PR handling

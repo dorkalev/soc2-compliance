@@ -54,6 +54,16 @@ on:
         required: false
         type: string
         default: ""
+      expected_reviewers:
+        description: "Comma-separated review bots expected later in the flow. Used to render a pending review state without scoring."
+        required: false
+        type: string
+        default: ""
+      review_phase:
+        description: "Review lifecycle phase: final, awaiting-review, or post-review"
+        required: false
+        type: string
+        default: "final"
       confidence_threshold:
         description: "Minimum confidence % to pass (0-100)"
         required: false
@@ -138,6 +148,8 @@ jobs:
           SPECS_PATH: ${{ inputs.specs_path }}
           LINEAR_TEAM_ID: ${{ inputs.linear_team_id }}
           REQUIRED_REVIEWERS: ${{ inputs.required_reviewers }}
+          EXPECTED_REVIEWERS: ${{ inputs.expected_reviewers }}
+          REVIEW_PHASE: ${{ inputs.review_phase }}
           CONFIDENCE_THRESHOLD: ${{ inputs.confidence_threshold }}
           PR_LABELS: ${{ inputs.pr_labels }}
           TEST_EXCLUDE_PATHS: ${{ inputs.test_exclude_paths }}
