@@ -14,8 +14,6 @@ Checks:
 """
 
 import json
-import os
-import re
 import subprocess
 import sys
 import time
@@ -23,281 +21,48 @@ from pathlib import Path
 
 import httpx
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-LINEAR_API_KEY = os.environ.get("LINEAR_API_KEY")
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN") or os.environ.get("REPO_TOKEN")
-PR_NUMBER = os.environ.get("PR_NUMBER", "")
-REPO = os.environ.get("REPO", "")
-
-
-def _fetch_pr_metadata() -> tuple[str, str, str]:
-    """Fetch PR body/title/author from GitHub API if not provided via env."""
-    body = os.environ.get("PR_BODY", "")
-    title = os.environ.get("PR_TITLE", "")
-    author = os.environ.get("PR_AUTHOR", "")
-    if (body and title) or not (GITHUB_TOKEN and REPO and PR_NUMBER):
-        return body, title, author
-    try:
-        resp = httpx.get(
-            f"https://api.github.com/repos/{REPO}/pulls/{PR_NUMBER}",
-            headers={"Authorization": f"token {GITHUB_TOKEN}"},
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            return data.get("body", "") or "", data.get("title", "") or "", data.get("user", {}).get("login", "") or ""
-    except Exception:
-        pass
-    return body, title, author
-
-
-PR_BODY, PR_TITLE, PR_AUTHOR = _fetch_pr_metadata()
-TARGET_REPO = os.environ.get("TARGET_REPO", ".")
-BASE_BRANCH = os.environ.get("BASE_BRANCH", "main")
-TICKET_PATTERN = os.environ.get("TICKET_PATTERN", r"[A-Z]+-\d+")
-ISSUES_PATH = os.environ.get("ISSUES_PATH", "issues")
-SPECS_PATH = os.environ.get("SPECS_PATH", "specs")
-LINEAR_TEAM_ID = os.environ.get("LINEAR_TEAM_ID", "")
-SUPPORTED_REVIEWERS = ("coderabbit", "aikido", "greptile")
-_required_reviewers_raw = [
-    r.strip().lower() for r in os.environ.get("REQUIRED_REVIEWERS", "").split(",") if r.strip()
-]
-if any(r in {"*", "all"} for r in _required_reviewers_raw):
-    REQUIRED_REVIEWERS = list(SUPPORTED_REVIEWERS)
-else:
-    REQUIRED_REVIEWERS = []
-    _seen_reviewers = set()
-    for r in _required_reviewers_raw:
-        if r in SUPPORTED_REVIEWERS and r not in _seen_reviewers:
-            REQUIRED_REVIEWERS.append(r)
-            _seen_reviewers.add(r)
-_expected_reviewers_raw = [
-    r.strip().lower() for r in os.environ.get("EXPECTED_REVIEWERS", "").split(",") if r.strip()
-]
-if any(r in {"*", "all"} for r in _expected_reviewers_raw):
-    EXPECTED_REVIEWERS = list(SUPPORTED_REVIEWERS)
-else:
-    EXPECTED_REVIEWERS = []
-    _seen_expected_reviewers = set()
-    for r in _expected_reviewers_raw:
-        if r in SUPPORTED_REVIEWERS and r not in _seen_expected_reviewers:
-            EXPECTED_REVIEWERS.append(r)
-            _seen_expected_reviewers.add(r)
-CONFIDENCE_THRESHOLD = int(os.environ.get("CONFIDENCE_THRESHOLD", "70"))
-TEST_EXCLUDE_PATHS = [
-    p.strip() for p in os.environ.get("TEST_EXCLUDE_PATHS", "").split(",") if p.strip()
-]
-PR_LABELS = [l.strip() for l in os.environ.get("PR_LABELS", "").split(",") if l.strip()]
-EXEMPT = "compliance:exempt" in PR_LABELS
-REVIEW_PHASE = os.environ.get("REVIEW_PHASE", "final").strip().lower() or "final"
-REVIEW_CHECK_PENDING = (
-    not EXEMPT
-    and REVIEW_PHASE in {"awaiting-review", "pre-review"}
-    and bool(EXPECTED_REVIEWERS)
-    and not bool(REQUIRED_REVIEWERS)
+from compliance_commenting import LiveComment
+from compliance_config import load_config
+from compliance_policy import enforce_policy
+from compliance_review_gate import (
+    BOT_LOGINS,
+    apply_dismissed_review_deductions,
+    bot_login_for,
+    is_real_review,
+    run_review_gate,
 )
-RUN_ID = os.environ.get("GITHUB_RUN_ID", "")
-COMMIT_SHA = os.environ.get("COMMIT_SHA", "")[:7]
+
+CONFIG = load_config()
+GEMINI_API_KEY = CONFIG.gemini_api_key
+LINEAR_API_KEY = CONFIG.linear_api_key
+GITHUB_TOKEN = CONFIG.github_token
+PR_NUMBER = CONFIG.pr_number
+REPO = CONFIG.repo
+PR_BODY = CONFIG.pr_body
+PR_TITLE = CONFIG.pr_title
+PR_AUTHOR = CONFIG.pr_author
+TARGET_REPO = CONFIG.target_repo
+BASE_BRANCH = CONFIG.base_branch
+TICKET_PATTERN = CONFIG.ticket_pattern
+ISSUES_PATH = CONFIG.issues_path
+SPECS_PATH = CONFIG.specs_path
+LINEAR_TEAM_ID = CONFIG.linear_team_id
+REQUIRED_REVIEWERS = CONFIG.required_reviewers
+EXPECTED_REVIEWERS = CONFIG.expected_reviewers
+CONFIDENCE_THRESHOLD = CONFIG.confidence_threshold
+TEST_EXCLUDE_PATHS = CONFIG.test_exclude_paths
+PR_LABELS = CONFIG.pr_labels
+EXEMPT = CONFIG.exempt
+REVIEW_PHASE = CONFIG.review_phase
+REVIEW_CHECK_PENDING = CONFIG.review_check_pending
+RUN_ID = CONFIG.run_id
+COMMIT_SHA = CONFIG.commit_sha
 
 MAX_STEPS = 25
 MAX_TOOL_OUTPUT = 50_000  # chars per tool result
 MAX_RETRIES = 5
 INITIAL_BACKOFF = 2
-REVIEW_GATE_RECHECK_SECONDS = int(os.environ.get("REVIEW_GATE_RECHECK_SECONDS", "180"))
-
-
-# ---------------------------------------------------------------------------
-# Live PR comment
-# ---------------------------------------------------------------------------
-COMMENT_MARKER = "<!-- soc2-compliance-bot -->"
-
-
-class LiveComment:
-    """Manages a single PR comment that updates in-place as the agent works."""
-
-    def __init__(self):
-        self._delete_existing_comments()
-        self.comment_id = None
-        self.steps: list[str] = []
-
-    # -- GitHub helpers --
-    def _api(self, method, endpoint, body=None):
-        if not (GITHUB_TOKEN and REPO and PR_NUMBER):
-            return None
-        owner, repo = REPO.split("/", 1)
-        url = f"https://api.github.com/repos/{owner}/{repo}/{endpoint}"
-        headers = {
-            "Authorization": f"Bearer {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-        try:
-            fn = {"POST": httpx.post, "PATCH": httpx.patch, "GET": httpx.get, "DELETE": httpx.delete}[method]
-            kw = {"headers": headers, "timeout": 15}
-            if body:
-                kw["json"] = body
-            resp = fn(url, **kw)
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            print(f"GitHub API ({method} {endpoint}): {e}", file=sys.stderr)
-            return None
-
-    def _delete_existing_comments(self):
-        """Delete any existing SOC2 Compliance comments so the new one appears at the bottom."""
-        if not (GITHUB_TOKEN and REPO and PR_NUMBER):
-            return
-        page = 1
-        while page <= 10:
-            result = self._api("GET", f"issues/{PR_NUMBER}/comments?per_page=100&page={page}")
-            if not result:
-                break
-            for c in result:
-                if COMMENT_MARKER in (c.get("body") or ""):
-                    print(f"Deleting old compliance comment #{c['id']}", file=sys.stderr)
-                    self._api("DELETE", f"issues/comments/{c['id']}")
-            if len(result) < 100:
-                break
-            page += 1
-
-    def _footer(self):
-        parts = ["[soc2-compliance](https://github.com/dorkalev/soc2-compliance)"]
-        if COMMIT_SHA:
-            parts.append(f"commit {COMMIT_SHA}")
-        if RUN_ID:
-            parts.append(f"[run {RUN_ID}](https://github.com/{REPO}/actions/runs/{RUN_ID})")
-        return f"---\n<sub>{' · '.join(parts)}</sub>"
-
-    # -- Progress tracking --
-    def add_step(self, icon: str, text: str):
-        self.steps.append(f"{icon} {text}")
-        self._post_progress()
-
-    def update_last_step(self, icon: str, text: str):
-        if self.steps:
-            self.steps[-1] = f"{icon} {text}"
-        else:
-            self.steps.append(f"{icon} {text}")
-        self._post_progress()
-
-    def _post_progress(self):
-        body = "## 🔍 SOC2 Compliance: Auditing...\n\n"
-        for step in self.steps:
-            body += f"- {step}\n"
-        body += f"\n{self._footer()}"
-        self._upsert(body)
-
-    def _upsert(self, body: str):
-        # Prepend hidden marker so we can find this comment on subsequent runs
-        body = f"{COMMENT_MARKER}\n{body}"
-        if self.comment_id:
-            self._api("PATCH", f"issues/comments/{self.comment_id}", {"body": body})
-        else:
-            result = self._api("POST", f"issues/{PR_NUMBER}/comments", {"body": body})
-            if result:
-                self.comment_id = result["id"]
-
-    # -- Final report --
-    def _scorecard_line(self, items: list, pass_label: str, fail_label: str) -> str:
-        """Return a single scorecard line: pass or fail with details."""
-        if not items:
-            return f"  :white_check_mark: {pass_label}\n"
-        line = f"  :x: {fail_label}\n"
-        for item in items:
-            line += f"  - {item}\n"
-        return line
-
-    def finalize(self, report: dict):
-        compliant = report.get("compliant", False)
-        confidence = report.get("confidence_percent", 0)
-        threshold = report.get("confidence_threshold", CONFIDENCE_THRESHOLD)
-        is_exempt = report.get("exempt", False)
-        review_pending = report.get("review_check_pending", False)
-        expected_reviewers = report.get("expected_reviewers", [])
-        icon = "⏳" if review_pending else ("✅" if compliant else "❌")
-
-        exempt_badge = " (exempt)" if is_exempt else ""
-        if review_pending:
-            body = "## ⏳ SOC2 Compliance: review pending\n\n"
-            if expected_reviewers:
-                body += (
-                    "Final compliance scoring is blocked until required review posts: "
-                    + ", ".join(expected_reviewers)
-                    + "\n\n"
-                )
-            body += "Current findings below exclude review-tool results.\n\n"
-        else:
-            partial_badge = " · partial (no review check)" if not REQUIRED_REVIEWERS and not is_exempt else ""
-            body = f"## {icon} SOC2 Compliance: {confidence}%{exempt_badge}{partial_badge}\n\n"
-
-        if is_exempt:
-            # Exempt scorecard — minimal
-            body += f"Threshold {threshold}% · exempt PR, lightweight audit\n\n"
-            if not report.get("exempt_justified", True):
-                body += ":x: Change is too large or complex for exemption\n\n"
-        else:
-            # Full scorecard
-            body += f"Threshold {threshold}%\n\n"
-
-            tickets = report.get("tickets_found", [])
-            invalid = report.get("invalid_tickets", [])
-            unspecced = report.get("unspecced_changes", [])
-            missing_docs = report.get("missing_documentation", [])
-            spec_issues = report.get("spec_issues", [])
-            untested = report.get("untested_files", [])
-            unresolved = report.get("unresolved_reviews", [])
-            missing_rev = report.get("missing_reviewers", [])
-
-            # Ticket traceability
-            if tickets and not invalid:
-                body += f"  :white_check_mark: Tickets: {', '.join(tickets)}\n"
-            elif tickets:
-                body += f"  :x: Tickets: {', '.join(tickets)}\n"
-                for t in invalid:
-                    body += f"  - {t}\n"
-            else:
-                body += "  :x: No tickets found\n"
-
-            # Change coverage
-            body += self._scorecard_line(
-                unspecced, "All changes covered by tickets", "Untracked changes"
-            )
-
-            # Documentation
-            body += self._scorecard_line(
-                missing_docs + spec_issues, "Issue & spec files present", "Documentation gaps"
-            )
-
-            # Tests
-            body += self._scorecard_line(
-                untested, "Test coverage", "Missing tests"
-            )
-
-            # Dismissed reviews (resolved without code fix)
-            dismissed = report.get("dismissed_reviews", [])
-            if dismissed:
-                body += f"  :warning: {len(dismissed)} dismissed review finding(s) (resolved without code fix)\n"
-                for d in dismissed:
-                    body += f"  - {d}\n"
-
-            # Reviews
-            if not review_pending:
-                body += self._scorecard_line(
-                    unresolved + [f"Missing: {r}" for r in missing_rev],
-                    "Reviews clean", "Review issues"
-                )
-
-            body += "\n"
-
-        if not compliant:
-            body += "---\n\n"
-            body += "Fix: run `/forge:fix-compliance` in Claude Code\n\n"
-
-        body += self._footer()
-        self._upsert(body)
+REVIEW_GATE_RECHECK_SECONDS = CONFIG.review_gate_recheck_seconds
 
 
 # ---------------------------------------------------------------------------
@@ -515,318 +280,15 @@ def tool_pr_review_threads(state_filter: str | None = None) -> str:
     return "\n\n".join(results) if results else "(no review threads found)"
 
 
-BOT_LOGINS = {
-    "coderabbit": "coderabbitai[bot]",
-    "aikido": "aikido-pr-checks[bot]",
-    "greptile": "greptile-apps[bot]",
-}
-
-
-def _requested_review_bots() -> list[str]:
-    """Return configured bot short names."""
-    return list(REQUIRED_REVIEWERS)
-
-
-def _severity_for_bot_comment(bot_short: str, body: str) -> str | None:
-    """
-    Classify severity for deterministic early/late review gating.
-    Returns "critical", "major", or None (not blocking for this gate).
-    """
-    text = (body or "").lower()
-
-    if bot_short == "coderabbit":
-        if re.search(r"\bcritical\b", text):
-            return "critical"
-        if re.search(r"\bmajor\b|\bpotential issue\b", text):
-            return "major"
-        return None
-
-    if bot_short == "aikido":
-        if re.search(r"\bcritical\b", text):
-            return "critical"
-        if re.search(r"\bmajor\b|\bhigh\b", text):
-            return "major"
-        return None
-
-    # Greptile comments are treated as major by policy.
-    if bot_short == "greptile":
-        return "major"
-
-    return None
-
-
-def _short_summary(text: str, limit: int = 100) -> str:
-    line = (text or "").strip().split("\n", 1)[0].strip()
-    line = re.sub(r"\s+", " ", line)
-    if not line:
-        return "No summary provided"
-    if len(line) <= limit:
-        return line
-    return line[: limit - 1].rstrip() + "…"
-
-
-def _fetch_review_threads_raw() -> list[dict]:
-    """Fetch raw review threads for deterministic review gating."""
-    if not (GITHUB_TOKEN and REPO and PR_NUMBER):
-        return []
-
-    owner, repo = REPO.split("/", 1)
-    query = """
-    query($owner: String!, $repo: String!, $pr: Int!) {
-      repository(owner: $owner, name: $repo) {
-        pullRequest(number: $pr) {
-          reviewThreads(first: 100) {
-            nodes {
-              isResolved
-              comments(first: 20) {
-                nodes {
-                  author { login }
-                  body
-                  path
-                  line
-                  reactions(first: 10) {
-                    nodes { user { login } }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }"""
-    resp = httpx.post(
-        "https://api.github.com/graphql",
-        headers={"Authorization": f"Bearer {GITHUB_TOKEN}", "Content-Type": "application/json"},
-        json={"query": query, "variables": {"owner": owner, "repo": repo, "pr": int(PR_NUMBER)}},
-        timeout=20,
-    )
-    resp.raise_for_status()
-    return (
-        resp.json()
-        .get("data", {}).get("repository", {}).get("pullRequest", {})
-        .get("reviewThreads", {}).get("nodes", [])
-    )
-
-
-def _extract_human_response(comments: list[dict], bot_login_set: set[str]) -> str:
-    """Extract first human reply text from a review thread (for audit context)."""
-    for c in comments:
-        author = (c.get("author", {}) or {}).get("login", "")
-        if author and author not in bot_login_set and not author.endswith("[bot]"):
-            return _short_summary(c.get("body", ""), limit=80)
-    return ""
-
-
-def collect_blocking_review_findings() -> dict:
-    """
-    Deterministically collect unresolved major/critical findings from review bots.
-    Also collects dismissed findings: resolved threads where a human replied but
-    no code fix was made (bot CRITICAL/MAJOR only).
-    Only configured required reviewers are considered.
-    """
-    configured_bots = _requested_review_bots()
-    if not configured_bots or EXEMPT:
-        return {"unresolved_reviews": [], "dismissed_reviews": [], "error": None}
-
-    login_to_short = {v: k for k, v in BOT_LOGINS.items() if k in configured_bots}
-
-    try:
-        threads = _fetch_review_threads_raw()
-    except Exception as e:
-        return {"unresolved_reviews": [], "dismissed_reviews": [], "error": str(e)}
-
-    bot_login_set = set(login_to_short.keys())
-
-    def _thread_acknowledged_by_human(comments: list[dict]) -> bool:
-        """A human replied to or reacted to any comment in the thread."""
-        for c in comments:
-            # Human reply (any non-bot author after the first comment)
-            author = (c.get("author", {}) or {}).get("login", "")
-            if author and author not in bot_login_set and not author.endswith("[bot]"):
-                return True
-            # Human reaction (like/thumbs-up/etc.) on any comment
-            reactions = c.get("reactions", {}).get("nodes", [])
-            for r in reactions:
-                ruser = (r.get("user", {}) or {}).get("login", "")
-                if ruser and ruser not in bot_login_set and not ruser.endswith("[bot]"):
-                    return True
-        return False
-
-    unresolved = []
-    dismissed = []
-    for thread in threads:
-        comments = thread.get("comments", {}).get("nodes", [])
-        is_resolved = thread.get("isResolved", False)
-
-        # Find the bot comment and its severity
-        bot_comment = None
-        bot_short = None
-        for c in comments:
-            login = (c.get("author", {}) or {}).get("login", "")
-            if login in login_to_short:
-                bot_comment = c
-                bot_short = login_to_short[login]
-                break
-
-        if not bot_comment or not bot_short:
-            continue
-
-        severity = _severity_for_bot_comment(bot_short, bot_comment.get("body", ""))
-        if not severity:
-            continue
-
-        path = bot_comment.get("path") or "(unknown file)"
-        line = bot_comment.get("line")
-        location = f"{path}:{line}" if line else path
-        summary = _short_summary(bot_comment.get("body", ""))
-
-        if is_resolved:
-            # Resolved thread — check if human replied (dismissed without code fix)
-            if _thread_acknowledged_by_human(comments):
-                human_text = _extract_human_response(comments, bot_login_set)
-                entry = f"{bot_short} {severity.upper()} on {location}: {summary}"
-                if human_text:
-                    entry += f" | Developer: {human_text}"
-                dismissed.append(entry)
-            continue
-
-        # Unresolved thread — if human acknowledged, skip (existing behavior)
-        if _thread_acknowledged_by_human(comments):
-            continue
-
-        unresolved.append(f"{bot_short} {severity.upper()} on {location}: {summary}")
-
-    return {"unresolved_reviews": unresolved, "dismissed_reviews": dismissed, "error": None}
-
-
-def build_review_gate_failure_report(
-    unresolved_reviews: list[str], phase: str, dismissed_reviews: list[str] | None = None,
-) -> dict:
-    count = len(unresolved_reviews)
-    summary = (
-        f"Fast-failed at {phase} review gate: {count} unresolved major/critical "
-        f"CodeRabbit/Greptile/Aikido finding(s)"
-    )
-    return {
-        "compliant": False,
-        "confidence_percent": 0,
-        "confidence_threshold": CONFIDENCE_THRESHOLD,
-        "summary": summary,
-        "issues": [f"{count} critical/major review finding(s) unresolved"],
-        "tickets_found": [],
-        "invalid_tickets": [],
-        "unspecced_changes": [],
-        "missing_documentation": [],
-        "spec_issues": [],
-        "untested_files": [],
-        "unresolved_reviews": unresolved_reviews,
-        "dismissed_reviews": dismissed_reviews or [],
-        "missing_reviewers": [],
-        "review_gate_phase": phase,
-    }
-
-
-def apply_dismissed_review_deductions(report: dict) -> None:
-    """Deduct points for dismissed review findings (resolved without code fix).
-
-    Each dismissed MAJOR: -3%, each dismissed CRITICAL: -5%.
-    Non-blocking (won't auto-fail), but prevents 100%.
-    """
-    dismissed = report.get("dismissed_reviews", [])
-    if not dismissed:
-        return
-
-    deduction = 0
-    for entry in dismissed:
-        if " CRITICAL " in entry:
-            deduction += 5
-        else:
-            deduction += 3
-
-    if deduction > 0:
-        current = report.get("confidence_percent", 100)
-        report["confidence_percent"] = max(0, current - deduction)
-        report["issues"].append(
-            f"{len(dismissed)} dismissed review finding(s) (resolved without code fix)"
-        )
-        # Re-evaluate compliance after deduction
-        if report["confidence_percent"] < report.get("confidence_threshold", CONFIDENCE_THRESHOLD):
-            report["compliant"] = False
-
-
-def strip_review_findings_for_pending_phase(findings: dict) -> dict:
-    """Drop review-derived findings when the review gate has not completed yet."""
-    sanitized = dict(findings)
-    sanitized["unresolved_reviews"] = []
-    sanitized["dismissed_reviews"] = []
-    sanitized["missing_reviewers"] = []
-    return sanitized
-
-
-def run_review_gate(comment: LiveComment, phase: str) -> tuple[dict | None, list[str]]:
-    """Run deterministic major/critical review gate.
-
-    Returns (failure_report_or_None, dismissed_findings_list).
-    """
-    configured_bots = _requested_review_bots()
-    if EXEMPT or not configured_bots:
-        return None, []
-
-    comment.add_step("🔎", f"Review gate ({phase}) — checking unresolved major/critical bot findings")
-    gate = collect_blocking_review_findings()
-    if gate["error"]:
-        comment.add_step("⚠️", f"Review gate ({phase}) unavailable: {gate['error']}")
-        return None, []
-
-    unresolved = gate["unresolved_reviews"]
-    dismissed = gate.get("dismissed_reviews", [])
-
-    if dismissed:
-        comment.add_step(
-            "⚠️",
-            f"Review gate ({phase}) — {len(dismissed)} dismissed review finding(s) (resolved without code fix)",
-        )
-
-    if unresolved:
-        comment.add_step(
-            "❌",
-            f"Review gate ({phase}) failed — {len(unresolved)} unresolved major/critical finding(s)",
-        )
-        return build_review_gate_failure_report(unresolved, phase=phase, dismissed_reviews=dismissed), dismissed
-
-    comment.add_step("✅", f"Review gate ({phase}) passed")
-    return None, dismissed
-
-
-def _is_real_review(result: str, reviewer: str) -> bool:
-    """Check if PR comments contain a real review, not just a placeholder."""
-    if "(no comments found)" in result:
-        return False
-    low = result.lower()
-    # CodeRabbit posts "Currently processing" / "review in progress" placeholders
-    # before the real review which always contains a "Walkthrough" section.
-    if "coderabbit" in reviewer.lower():
-        # "Reviews paused" is never a real review, even if walkthrough is present
-        if "reviews paused" in low:
-            return False
-        is_placeholder = (
-            "review in progress by coderabbit" in low
-            or "currently processing" in low
-        )
-        if is_placeholder and "walkthrough" not in low:
-            return False
-    return True
-
-
 def tool_wait_for_reviewer(reviewer: str, max_wait: int = 120) -> str:
     """Wait for a review bot to post, polling every 30s. Returns its comments or timeout."""
-    author = BOT_LOGINS.get(reviewer.lower(), f"{reviewer}[bot]")
+    author = bot_login_for(reviewer)
     interval = 30
     elapsed = 0
 
     while True:
         result = tool_pr_comments(author_filter=author)
-        if _is_real_review(result, reviewer):
+        if is_real_review(result, reviewer):
             return f"POSTED (found after {elapsed}s):\n{result}"
         elapsed += interval
         if elapsed > max_wait:
@@ -1244,7 +706,7 @@ def annotate_tool_call(comment: LiveComment, name: str, args: dict, result: str)
         author = args.get("author_filter", "")
         if author:
             bot_name = author.replace("[bot]", "")
-            if _is_real_review(result, bot_name):
+            if is_real_review(result, bot_name):
                 comment.add_step("✅", f"**{bot_name}** — review found")
             else:
                 comment.add_step("⏳", f"**{bot_name}** — no review posted")
@@ -1393,171 +855,6 @@ def run_agent(comment: LiveComment) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Policy enforcement (deterministic — not up to the LLM)
-# ---------------------------------------------------------------------------
-def _calculate_score(findings: dict) -> int:
-    """Deterministic score from findings — mirrors the prompt rubric exactly."""
-    score = 100
-    score -= 10 * len(findings.get("invalid_tickets", []))
-    score -= 10 * len(findings.get("unspecced_changes", []))
-    score -= 10 * len(findings.get("missing_documentation", []))
-    score -= 10 * len(findings.get("spec_issues", []))
-    score -= 5 * len(findings.get("untested_files", []))
-    score -= 5 * len(findings.get("missing_reviewers", []))
-    return max(0, min(100, score))
-
-
-def _filter_excluded_paths(files: list, exclude_paths: list) -> list:
-    """Remove files matching TEST_EXCLUDE_PATHS from the untested list."""
-    if not exclude_paths:
-        return files
-    return [f for f in files if not any(f.startswith(p) or f.split(":")[0].startswith(p) for p in exclude_paths)]
-
-
-def enforce_policy(findings: dict) -> dict:
-    """Apply confidence threshold to agent findings. Returns the final report."""
-    findings = dict(findings)
-    if REVIEW_CHECK_PENDING:
-        findings = strip_review_findings_for_pending_phase(findings)
-
-    # Filter untested files against TEST_EXCLUDE_PATHS before scoring
-    findings["untested_files"] = _filter_excluded_paths(
-        findings.get("untested_files", []), TEST_EXCLUDE_PATHS
-    )
-
-    agent_score = findings.get("confidence_percent", 0)
-    confidence = _calculate_score(findings)
-
-    # Log discrepancy between agent's score and deterministic recalculation
-    if agent_score != confidence:
-        print(f"Score override: agent={agent_score}% → deterministic={confidence}%", file=sys.stderr)
-
-    report = {
-        "compliant": confidence >= CONFIDENCE_THRESHOLD,
-        "confidence_percent": confidence,
-        "confidence_threshold": CONFIDENCE_THRESHOLD,
-        "summary": findings.get("summary", ""),
-        "tickets_found": findings.get("tickets_found", []),
-        "issues": [],
-        "invalid_tickets": findings.get("invalid_tickets", []),
-        "unspecced_changes": findings.get("unspecced_changes", []),
-        "missing_documentation": findings.get("missing_documentation", []),
-        "spec_issues": findings.get("spec_issues", []),
-        "untested_files": findings.get("untested_files", []),
-        "unresolved_reviews": findings.get("unresolved_reviews", []),
-        "dismissed_reviews": findings.get("dismissed_reviews", []),
-        "missing_reviewers": findings.get("missing_reviewers", []),
-        "review_check_pending": REVIEW_CHECK_PENDING,
-        "expected_reviewers": EXPECTED_REVIEWERS,
-    }
-
-    # Exempt PR handling
-    if EXEMPT:
-        report["exempt"] = True
-        exempt_justified = findings.get("exempt_justified", True)
-        report["exempt_justified"] = exempt_justified
-        if not exempt_justified:
-            report["compliant"] = False
-            report["issues"].append(
-                "Change is too large or complex for compliance:exempt — create a ticket"
-            )
-        else:
-            # Exempt and justified — skip ticket/doc/test checks, but PR description is still mandatory
-            pr_body_stripped = (PR_BODY or "").strip()
-            if len(pr_body_stripped) < 20:
-                report["compliant"] = False
-                report["issues"].insert(0, "MANDATORY: PR description is empty or too brief (min 20 chars)")
-            else:
-                report["compliant"] = True
-            return report
-
-    # -----------------------------------------------------------------------
-    # Mandatory gates — these fail the audit regardless of confidence score
-    # -----------------------------------------------------------------------
-
-    # Gate 1: PR description is mandatory
-    pr_body_stripped = (PR_BODY or "").strip()
-    if len(pr_body_stripped) < 20:
-        report["compliant"] = False
-        report["issues"].insert(0, "MANDATORY: PR description is empty or too brief (min 20 chars)")
-
-    # Gate 2: At least one VALID ticket must exist in Linear
-    tickets = [t for t in findings.get("tickets_found", []) if t.strip()]
-    invalid = findings.get("invalid_tickets", [])
-    if not tickets and not invalid:
-        # No tickets referenced at all
-        report["compliant"] = False
-        report["issues"].insert(0, "MANDATORY: No Linear ticket referenced in PR title or description")
-    elif not tickets and invalid:
-        # Tickets were referenced but ALL are invalid — no real authorization
-        report["compliant"] = False
-        report["issues"].insert(0,
-            "MANDATORY: All referenced tickets are invalid — no verified authorization in Linear"
-        )
-
-    # Gate 3: Unresolved critical/major review findings
-    # (Already enforced by review gate, but also enforce here as a safety net)
-    if report.get("unresolved_reviews"):
-        report["compliant"] = False
-        if not any("critical/major review" in i.lower() for i in report["issues"]):
-            report["issues"].insert(0,
-                f"MANDATORY: {len(report['unresolved_reviews'])} unresolved critical/major review finding(s)"
-            )
-
-    # Gate 4: Required reviewers must have posted a real review
-    if report.get("missing_reviewers"):
-        report["compliant"] = False
-        report["issues"].insert(0,
-            "MANDATORY: Required reviewer(s) not posted: " + ", ".join(report["missing_reviewers"])
-        )
-
-    # If any mandatory gate failed, cap the score at 55% (always below threshold)
-    mandatory_failed = any(i.startswith("MANDATORY:") for i in report["issues"])
-    if mandatory_failed and confidence > 55:
-        confidence = 55
-        report["confidence_percent"] = confidence
-        report["compliant"] = False
-
-    # Build human-readable issues list from findings (for the comment)
-    if report["invalid_tickets"]:
-        report["issues"].append(
-            f"{len(report['invalid_tickets'])} ticket(s) not found in Linear"
-        )
-    if report["unspecced_changes"]:
-        report["issues"].append(
-            f"{len(report['unspecced_changes'])} file(s) changed without ticket coverage"
-        )
-    if report["missing_documentation"]:
-        report["issues"].append(
-            f"{len(report['missing_documentation'])} ticket(s) missing issues/ or specs/ files"
-        )
-    if report["spec_issues"]:
-        report["issues"].append(
-            f"{len(report['spec_issues'])} spec alignment issue(s)"
-        )
-    if report["untested_files"]:
-        report["issues"].append(
-            f"{len(report['untested_files'])} source file(s) with no test coverage"
-        )
-    if report["missing_reviewers"]:
-        report["issues"].append(
-            "Required reviewer(s) not posted: " + ", ".join(report["missing_reviewers"])
-        )
-    if report["unresolved_reviews"]:
-        report["issues"].append(
-            f"{len(report['unresolved_reviews'])} critical/major review finding(s) unresolved"
-        )
-
-    if not report["summary"]:
-        report["summary"] = (
-            f"Confidence {confidence}% (threshold {CONFIDENCE_THRESHOLD}%) — "
-            + ("passed" if report["compliant"] else "failed")
-        )
-
-    return report
-
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
@@ -1565,7 +862,7 @@ def main():
         print(json.dumps({"compliant": False, "summary": "GEMINI_API_KEY not set", "issues": ["Missing API key"]}))
         return
 
-    comment = LiveComment()
+    comment = LiveComment(CONFIG)
     if EXEMPT:
         comment.add_step("🔄", "Starting **exempt** compliance audit (lightweight)...")
     else:
@@ -1575,22 +872,22 @@ def main():
     try:
         all_dismissed: list[str] = []
 
-        early_gate_failure, early_dismissed = run_review_gate(comment, phase="start")
+        early_gate_failure, early_dismissed = run_review_gate(CONFIG, comment, phase="start")
         all_dismissed.extend(early_dismissed)
         if early_gate_failure:
             report = early_gate_failure
             # Still apply dismissed deductions even on gate failure
-            apply_dismissed_review_deductions(report)
+            apply_dismissed_review_deductions(report, CONFIDENCE_THRESHOLD)
             comment.finalize(report)
             print(json.dumps(report, indent=2))
             return
 
         findings = run_agent(comment)
-        report = enforce_policy(findings)
+        report = enforce_policy(CONFIG, findings)
 
         elapsed = time.time() - started_at
         if elapsed >= REVIEW_GATE_RECHECK_SECONDS:
-            late_gate_failure, late_dismissed = run_review_gate(comment, phase="end")
+            late_gate_failure, late_dismissed = run_review_gate(CONFIG, comment, phase="end")
             all_dismissed.extend(late_dismissed)
             if late_gate_failure:
                 # Preserve existing issues and deterministically fail if new blocking findings appeared.
@@ -1616,7 +913,7 @@ def main():
             report["dismissed_reviews"] = list(dict.fromkeys(existing + all_dismissed))
 
         # Apply score deductions for dismissed reviews
-        apply_dismissed_review_deductions(report)
+        apply_dismissed_review_deductions(report, CONFIDENCE_THRESHOLD)
     except Exception as e:
         print(f"Agent crashed: {e}", file=sys.stderr)
         report = {
