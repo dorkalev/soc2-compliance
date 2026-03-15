@@ -48,6 +48,34 @@ def _fetch_pr_metadata(github_token: str | None, repo: str, pr_number: str) -> t
     return body, title, author
 
 
+def _default_agent_key(review_phase: str) -> str:
+    if review_phase in {"awaiting-review", "pre-review"}:
+        return "audit"
+    if review_phase in {"post-review", "final"}:
+        return "review-gate"
+    return review_phase or "compliance"
+
+
+def _default_agent_name(review_phase: str) -> str:
+    if review_phase in {"awaiting-review", "pre-review"}:
+        return "SOC2 Audit Agent"
+    if review_phase in {"post-review", "final"}:
+        return "SOC2 Review Gate Agent"
+    return "SOC2 Compliance Agent"
+
+
+def _default_blocking_criteria(review_phase: str) -> str:
+    if review_phase in {"awaiting-review", "pre-review"}:
+        return (
+            "ticket coverage, documentation/spec coverage, or test coverage violates policy. "
+            "Review-bot findings are excluded in this phase."
+        )
+    return (
+        "the score is below threshold, a required review bot is missing, or any unresolved "
+        "major/critical review finding remains open."
+    )
+
+
 def load_config() -> ComplianceConfig:
     gemini_api_key = os.environ.get("GEMINI_API_KEY")
     linear_api_key = os.environ.get("LINEAR_API_KEY")
@@ -60,6 +88,11 @@ def load_config() -> ComplianceConfig:
     required_reviewers = _parse_reviewers(os.environ.get("REQUIRED_REVIEWERS", ""))
     expected_reviewers = _parse_reviewers(os.environ.get("EXPECTED_REVIEWERS", ""))
     review_phase = os.environ.get("REVIEW_PHASE", "final").strip().lower() or "final"
+    agent_key = os.environ.get("COMPLIANCE_AGENT_KEY", "").strip() or _default_agent_key(review_phase)
+    agent_name = os.environ.get("COMPLIANCE_AGENT_NAME", "").strip() or _default_agent_name(review_phase)
+    blocking_criteria = (
+        os.environ.get("COMPLIANCE_BLOCKING_CRITERIA", "").strip() or _default_blocking_criteria(review_phase)
+    )
 
     return ComplianceConfig(
         gemini_api_key=gemini_api_key,
@@ -84,6 +117,9 @@ def load_config() -> ComplianceConfig:
         ],
         pr_labels=pr_labels,
         exempt=exempt,
+        agent_key=agent_key,
+        agent_name=agent_name,
+        blocking_criteria=blocking_criteria,
         review_phase=review_phase,
         review_check_pending=(
             not exempt

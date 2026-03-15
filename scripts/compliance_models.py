@@ -29,6 +29,9 @@ class ComplianceConfig:
     test_exclude_paths: list[str]
     pr_labels: list[str]
     exempt: bool
+    agent_key: str
+    agent_name: str
+    blocking_criteria: str
     review_phase: str
     review_check_pending: bool
     run_id: str

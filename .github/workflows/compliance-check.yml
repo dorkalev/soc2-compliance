@@ -69,6 +69,21 @@ on:
         required: false
         type: string
         default: "final"
+      agent_key:
+        description: "Stable comment identity for this workflow caller"
+        required: false
+        type: string
+        default: ""
+      agent_name:
+        description: "Human-readable agent name shown in PR comments"
+        required: false
+        type: string
+        default: ""
+      blocking_criteria:
+        description: "Sentence describing exactly when this agent blocks merge"
+        required: false
+        type: string
+        default: ""
       confidence_threshold:
         description: "Minimum confidence % to pass (0-100)"
         required: false
@@ -156,6 +171,9 @@ jobs:
           REQUIRED_REVIEWERS: ${{ inputs.required_reviewers }}
           EXPECTED_REVIEWERS: ${{ inputs.expected_reviewers }}
           REVIEW_PHASE: ${{ inputs.review_phase }}
+          COMPLIANCE_AGENT_KEY: ${{ inputs.agent_key }}
+          COMPLIANCE_AGENT_NAME: ${{ inputs.agent_name }}
+          COMPLIANCE_BLOCKING_CRITERIA: ${{ inputs.blocking_criteria }}
           CONFIDENCE_THRESHOLD: ${{ inputs.confidence_threshold }}
           PR_LABELS: ${{ inputs.pr_labels }}
           TEST_EXCLUDE_PATHS: ${{ inputs.test_exclude_paths }}
@@ -207,15 +225,33 @@ jobs:
               report = { compliant: false, summary: 'Agent crashed before reporting', issues: ['Check workflow logs'] };
             }
 
-            const MARKER = '<!-- soc2-compliance-bot -->';
+            const agentKey = '${{ inputs.agent_key }}' || 'compliance';
+            const reviewPhase = '${{ inputs.review_phase }}' || 'final';
+            const agentName = '${{ inputs.agent_name }}' || 'SOC2 Compliance Agent';
+            const blockingCriteria = '${{ inputs.blocking_criteria }}';
+            const markers = new Set([
+              `<!-- soc2-compliance-bot:${agentKey}:${reviewPhase} -->`,
+              `<!-- soc2-compliance-bot:${agentKey}:awaiting-review -->`,
+              `<!-- soc2-compliance-bot:${agentKey}:post-review -->`,
+              `<!-- soc2-compliance-bot:${agentKey}:final -->`,
+              '<!-- soc2-compliance-bot -->',
+              '<!-- soc2-compliance-bot:awaiting-review -->',
+              '<!-- soc2-compliance-bot:post-review -->',
+              '<!-- soc2-compliance-bot:final -->',
+            ]);
             const sha = '${{ github.event.pull_request.head.sha || github.sha }}'.substring(0, 7);
             const runId = '${{ github.run_id }}';
-            let body = `${MARKER}\n## ❌ SOC2 Compliance: Failed\n\n`;
+            let body = `<!-- soc2-compliance-bot:${agentKey}:${reviewPhase} -->\n## ❌ ${agentName}: failed\n\n`;
+            body += `**Blocks merge now:** Yes\n`;
+            if (blockingCriteria) {
+              body += `**Blocks merge when:** ${blockingCriteria}\n`;
+            }
+            body += `\n`;
             body += `**${report.summary || 'Unknown error'}**\n\n`;
             if (report.issues?.length) {
               report.issues.forEach(i => body += `- ${i}\n`);
             }
-            body += `\n---\n\n## 🔧 How to Fix\n\nRun this command in Claude Code:\n\n\`\`\`\n/forge:fix-compliance\n\`\`\`\n\n`;
+            body += `\n---\n\nFix: run \`/forge:fix-compliance\`\n\n`;
             body += `---\n<sub>[soc2-compliance](https://github.com/dorkalev/soc2-compliance) · commit ${sha} · [run ${runId}](https://github.com/${{ inputs.repo }}/actions/runs/${runId})</sub>`;
 
             const [owner, repo] = '${{ inputs.repo }}'.split('/');
@@ -224,7 +260,7 @@ jobs:
             // Delete existing compliance comments so the new one appears at the bottom
             const comments = await github.rest.issues.listComments({ owner, repo, issue_number, per_page: 100 });
             for (const c of comments.data) {
-              if (c.body && c.body.includes(MARKER)) {
+              if (c.body && [...markers].some(marker => c.body.includes(marker))) {
                 await github.rest.issues.deleteComment({ owner, repo, comment_id: c.id });
               }
             }

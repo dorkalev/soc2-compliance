@@ -43,14 +43,22 @@ class LiveComment:
             return None
 
     def _marker(self) -> str:
+        agent_key = self.config.agent_key or "compliance"
         phase = self.config.review_phase or "final"
-        return f"{COMMENT_MARKER_PREFIX}:{phase} -->"
+        return f"{COMMENT_MARKER_PREFIX}:{agent_key}:{phase} -->"
 
     def _markers_to_replace(self) -> set[str]:
-        markers = {self._marker()}
-        if self.config.review_phase in {"post-review", "final"}:
-            markers.add(f"{COMMENT_MARKER_PREFIX}:awaiting-review -->")
-        return markers
+        agent_key = self.config.agent_key or "compliance"
+        return {
+            self._marker(),
+            f"{COMMENT_MARKER_PREFIX}:{agent_key}:awaiting-review -->",
+            f"{COMMENT_MARKER_PREFIX}:{agent_key}:post-review -->",
+            f"{COMMENT_MARKER_PREFIX}:{agent_key}:final -->",
+            f"{COMMENT_MARKER_PREFIX} -->",
+            f"{COMMENT_MARKER_PREFIX}:awaiting-review -->",
+            f"{COMMENT_MARKER_PREFIX}:post-review -->",
+            f"{COMMENT_MARKER_PREFIX}:final -->",
+        }
 
     def _delete_existing_comments(self):
         """Delete any existing SOC2 Compliance comments so the new one appears at the bottom."""
@@ -81,6 +89,16 @@ class LiveComment:
             )
         return f"---\n<sub>{' · '.join(parts)}</sub>"
 
+    def _title(self, prefix: str, suffix: str) -> str:
+        return f"## {prefix} {self.config.agent_name}: {suffix}\n\n"
+
+    def _blocking_section(self, compliant: bool) -> str:
+        blocks_merge_now = "Yes" if not compliant else "No"
+        body = f"**Blocks merge now:** {blocks_merge_now}\n"
+        if self.config.blocking_criteria:
+            body += f"**Blocks merge when:** {self.config.blocking_criteria}\n"
+        return body + "\n"
+
     def add_step(self, icon: str, text: str):
         self.steps.append(f"{icon} {text}")
         self._post_progress()
@@ -93,7 +111,7 @@ class LiveComment:
         self._post_progress()
 
     def _post_progress(self):
-        body = "## 🔍 SOC2 Compliance: Auditing...\n\n"
+        body = self._title("🔍", "auditing")
         for step in self.steps:
             body += f"- {step}\n"
         body += f"\n{self._footer()}"
@@ -128,7 +146,8 @@ class LiveComment:
 
         exempt_badge = " (exempt)" if is_exempt else ""
         if review_pending:
-            body = "## ⏳ SOC2 Compliance: review pending\n\n"
+            body = self._title("⏳", "waiting for required review")
+            body += self._blocking_section(compliant)
             if expected_reviewers:
                 body += (
                     "Final compliance scoring is blocked until required review posts: "
@@ -138,7 +157,8 @@ class LiveComment:
             body += "Current findings below exclude review-tool results.\n\n"
         else:
             partial_badge = " · partial (no review check)" if not self.config.required_reviewers and not is_exempt else ""
-            body = f"## {icon} SOC2 Compliance: {confidence}%{exempt_badge}{partial_badge}\n\n"
+            body = self._title(icon, f"{confidence}%{exempt_badge}{partial_badge}")
+            body += self._blocking_section(compliant)
 
         if is_exempt:
             body += f"Threshold {threshold}% · exempt PR, lightweight audit\n\n"
@@ -190,7 +210,7 @@ class LiveComment:
 
         if not compliant:
             body += "---\n\n"
-            body += "Fix: run `/forge:fix-compliance` in Claude Code\n\n"
+            body += "Fix: run `/forge:fix-compliance`\n\n"
 
         body += self._footer()
         self._upsert(body)
