@@ -146,13 +146,21 @@ class LiveComment:
 
         exempt_badge = " (exempt)" if is_exempt else ""
         if review_pending:
-            body = self._title("⏳", "waiting for required review")
+            if expected_reviewers:
+                body = self._title("⏳", "waiting for required review")
+            else:
+                body = self._title("ℹ️", "partial audit")
             body += self._blocking_section(compliant)
             if expected_reviewers:
                 body += (
                     "Final compliance scoring is blocked until required review posts: "
                     + ", ".join(expected_reviewers)
                     + "\n\n"
+                )
+            else:
+                body += (
+                    "Required review already posted. Review-tool findings are evaluated "
+                    "separately by the SOC2 Review Gate Agent.\n\n"
                 )
             body += "Current findings below exclude review-tool results.\n\n"
         else:

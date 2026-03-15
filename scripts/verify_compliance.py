@@ -17,7 +17,6 @@ import json
 import subprocess
 import sys
 import time
-from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -914,13 +913,8 @@ def main():
 
         findings = run_agent(comment)
         findings["missing_reviewers"] = determine_missing_reviewers()
-        pending_expected_reviewers = determine_pending_expected_reviewers()
-        effective_config = replace(
-            CONFIG,
-            review_check_pending=bool(pending_expected_reviewers),
-            expected_reviewers=pending_expected_reviewers,
-        )
-        report = enforce_policy(effective_config, findings)
+        report = enforce_policy(CONFIG, findings)
+        report["expected_reviewers"] = determine_pending_expected_reviewers()
 
         elapsed = time.time() - started_at
         if elapsed >= REVIEW_GATE_RECHECK_SECONDS:

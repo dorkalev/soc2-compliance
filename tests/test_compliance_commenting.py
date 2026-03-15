@@ -89,6 +89,32 @@ class CommentingTests(unittest.TestCase):
         self.assertIn("Fix: run `/forge:fix-compliance`", comment.last_body)
         self.assertNotIn("Claude Code", comment.last_body)
 
+    def test_finalize_uses_partial_audit_copy_when_review_already_posted(self):
+        comment = CapturingLiveComment(make_config())
+        report = {
+            "compliant": True,
+            "confidence_percent": 100,
+            "confidence_threshold": 70,
+            "exempt": False,
+            "review_check_pending": True,
+            "expected_reviewers": [],
+            "tickets_found": ["PROJ-42"],
+            "invalid_tickets": [],
+            "unspecced_changes": [],
+            "missing_documentation": [],
+            "spec_issues": [],
+            "untested_files": [],
+            "unresolved_reviews": [],
+            "dismissed_reviews": [],
+            "missing_reviewers": [],
+        }
+
+        comment.finalize(report)
+
+        self.assertIn("## ℹ️ SOC2 Audit Agent: partial audit", comment.last_body)
+        self.assertIn("Required review already posted.", comment.last_body)
+        self.assertNotIn("Final compliance scoring is blocked until required review posts", comment.last_body)
+
 
 if __name__ == "__main__":
     unittest.main()
