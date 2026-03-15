@@ -17,6 +17,7 @@ import json
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -869,6 +870,20 @@ def determine_missing_reviewers() -> list[str]:
     return missing
 
 
+def determine_pending_expected_reviewers() -> list[str]:
+    """Return expected reviewers that still have not posted real reviews yet."""
+    if not REVIEW_CHECK_PENDING or not EXPECTED_REVIEWERS:
+        return []
+
+    pending = []
+    for reviewer in EXPECTED_REVIEWERS:
+        author = bot_login_for(reviewer)
+        comments = tool_pr_comments(author_filter=author)
+        if not reviewer_requirement_satisfied(comments, reviewer):
+            pending.append(reviewer)
+    return pending
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -899,7 +914,13 @@ def main():
 
         findings = run_agent(comment)
         findings["missing_reviewers"] = determine_missing_reviewers()
-        report = enforce_policy(CONFIG, findings)
+        pending_expected_reviewers = determine_pending_expected_reviewers()
+        effective_config = replace(
+            CONFIG,
+            review_check_pending=bool(pending_expected_reviewers),
+            expected_reviewers=pending_expected_reviewers,
+        )
+        report = enforce_policy(effective_config, findings)
 
         elapsed = time.time() - started_at
         if elapsed >= REVIEW_GATE_RECHECK_SECONDS:
