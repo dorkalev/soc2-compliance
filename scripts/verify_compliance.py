@@ -29,6 +29,7 @@ from compliance_review_gate import (
     apply_dismissed_review_deductions,
     bot_login_for,
     is_real_review,
+    reviewer_requirement_satisfied,
     run_review_gate,
 )
 
@@ -288,7 +289,7 @@ def tool_wait_for_reviewer(reviewer: str, max_wait: int = 120) -> str:
 
     while True:
         result = tool_pr_comments(author_filter=author)
-        if is_real_review(result, reviewer):
+        if reviewer_requirement_satisfied(result, reviewer):
             return f"POSTED (found after {elapsed}s):\n{result}"
         elapsed += interval
         if elapsed > max_wait:
@@ -706,7 +707,7 @@ def annotate_tool_call(comment: LiveComment, name: str, args: dict, result: str)
         author = args.get("author_filter", "")
         if author:
             bot_name = author.replace("[bot]", "")
-            if is_real_review(result, bot_name):
+            if reviewer_requirement_satisfied(result, bot_name):
                 comment.add_step("✅", f"**{bot_name}** — review found")
             else:
                 comment.add_step("⏳", f"**{bot_name}** — no review posted")
@@ -854,6 +855,20 @@ def run_agent(comment: LiveComment) -> dict:
     return {"summary": f"Agent did not complete within {MAX_STEPS} steps", "tickets_found": []}
 
 
+def determine_missing_reviewers() -> list[str]:
+    """Recompute reviewer presence from actual bot comments instead of trusting the model."""
+    if REVIEW_CHECK_PENDING or not REQUIRED_REVIEWERS:
+        return []
+
+    missing = []
+    for reviewer in REQUIRED_REVIEWERS:
+        author = bot_login_for(reviewer)
+        comments = tool_pr_comments(author_filter=author)
+        if not reviewer_requirement_satisfied(comments, reviewer):
+            missing.append(reviewer)
+    return missing
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -883,6 +898,7 @@ def main():
             return
 
         findings = run_agent(comment)
+        findings["missing_reviewers"] = determine_missing_reviewers()
         report = enforce_policy(CONFIG, findings)
 
         elapsed = time.time() - started_at

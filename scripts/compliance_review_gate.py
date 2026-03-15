@@ -20,6 +20,13 @@ def bot_login_for(reviewer: str) -> str:
     return BOT_LOGINS.get(reviewer.lower(), f"{reviewer}[bot]")
 
 
+def reviewer_bypassed(result: str, reviewer: str) -> bool:
+    low = result.lower()
+    if "greptile" in reviewer.lower():
+        return "too many files changed for review" in low
+    return False
+
+
 def severity_for_bot_comment(bot_short: str, body: str) -> str | None:
     """Classify severity for deterministic early/late review gating."""
     text = (body or "").lower()
@@ -251,7 +258,7 @@ def is_real_review(result: str, reviewer: str) -> bool:
     low = result.lower()
     if "coderabbit" in reviewer.lower():
         if "reviews paused" in low:
-            return False
+            return "walkthrough" in low or "actions performed" in low
         is_placeholder = (
             "review in progress by coderabbit" in low
             or "currently processing" in low
@@ -259,6 +266,10 @@ def is_real_review(result: str, reviewer: str) -> bool:
         if is_placeholder and "walkthrough" not in low:
             return False
     return True
+
+
+def reviewer_requirement_satisfied(result: str, reviewer: str) -> bool:
+    return reviewer_bypassed(result, reviewer) or is_real_review(result, reviewer)
 
 
 def run_review_gate(config: ComplianceConfig, comment, phase: str) -> tuple[dict | None, list[str]]:

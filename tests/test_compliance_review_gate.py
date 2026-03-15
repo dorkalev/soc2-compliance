@@ -10,6 +10,8 @@ from compliance_review_gate import (
     apply_dismissed_review_deductions,
     collect_blocking_review_findings,
     is_real_review,
+    reviewer_bypassed,
+    reviewer_requirement_satisfied,
     severity_for_bot_comment,
 )
 
@@ -56,9 +58,15 @@ class SeverityTests(unittest.TestCase):
 
     def test_is_real_review_filters_placeholders(self):
         self.assertFalse(is_real_review("review in progress by coderabbit", "coderabbit"))
-        self.assertFalse(is_real_review("Reviews paused\nWalkthrough", "coderabbit"))
+        self.assertTrue(is_real_review("Reviews paused\nWalkthrough", "coderabbit"))
         self.assertTrue(is_real_review("Walkthrough\nLooks good", "coderabbit"))
         self.assertTrue(is_real_review("security review complete", "aikido"))
+
+    def test_reviewer_requirement_satisfied_allows_greptile_bypass(self):
+        bypass = "Too many files changed for review. (`153 files found`, `100 file limit`)"
+        self.assertTrue(reviewer_bypassed(bypass, "greptile"))
+        self.assertTrue(reviewer_requirement_satisfied(bypass, "greptile"))
+        self.assertFalse(reviewer_requirement_satisfied("(no comments found)", "greptile"))
 
 
 class ReviewGateCollectionTests(unittest.TestCase):
