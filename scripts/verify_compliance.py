@@ -14,6 +14,7 @@ Checks:
 """
 
 import json
+import re
 import subprocess
 import sys
 import time
@@ -912,6 +913,18 @@ def main():
             return
 
         findings = run_agent(comment)
+
+        # Deterministic fallback: if the agent didn't extract tickets (crash,
+        # malformed JSON, etc.), extract them from PR title/body using the
+        # configured ticket pattern.  Ticket presence is a hard gate in
+        # enforce_policy, so it must not depend on the LLM.
+        if not findings.get("tickets_found"):
+            text = f"{PR_TITLE}\n{PR_BODY}"
+            found = list(dict.fromkeys(re.findall(TICKET_PATTERN, text)))
+            if found:
+                findings["tickets_found"] = found
+                print(f"Deterministic ticket fallback: {found}", file=sys.stderr)
+
         findings["missing_reviewers"] = determine_missing_reviewers()
         report = enforce_policy(CONFIG, findings)
         report["expected_reviewers"] = determine_pending_expected_reviewers()
