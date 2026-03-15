@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 
-from compliance_models import COMMENT_MARKER, ComplianceConfig
+from compliance_models import COMMENT_MARKER_PREFIX, ComplianceConfig
 
 
 class LiveComment:
@@ -35,10 +35,22 @@ class LiveComment:
                 kwargs["json"] = body
             resp = fn(url, **kwargs)
             resp.raise_for_status()
+            if method == "DELETE" or not resp.content:
+                return {}
             return resp.json()
         except Exception as exc:
             print(f"GitHub API ({method} {endpoint}): {exc}", file=sys.stderr)
             return None
+
+    def _marker(self) -> str:
+        phase = self.config.review_phase or "final"
+        return f"{COMMENT_MARKER_PREFIX}:{phase} -->"
+
+    def _markers_to_replace(self) -> set[str]:
+        markers = {self._marker()}
+        if self.config.review_phase in {"post-review", "final"}:
+            markers.add(f"{COMMENT_MARKER_PREFIX}:awaiting-review -->")
+        return markers
 
     def _delete_existing_comments(self):
         """Delete any existing SOC2 Compliance comments so the new one appears at the bottom."""
@@ -51,7 +63,8 @@ class LiveComment:
             if not result:
                 break
             for comment in result:
-                if COMMENT_MARKER in (comment.get("body") or ""):
+                body = comment.get("body") or ""
+                if any(marker in body for marker in self._markers_to_replace()):
                     print(f"Deleting old compliance comment #{comment['id']}", file=sys.stderr)
                     self._api("DELETE", f"issues/comments/{comment['id']}")
             if len(result) < 100:
@@ -87,7 +100,7 @@ class LiveComment:
         self._upsert(body)
 
     def _upsert(self, body: str):
-        body = f"{COMMENT_MARKER}\n{body}"
+        body = f"{self._marker()}\n{body}"
         if self.comment_id:
             self._api("PATCH", f"issues/comments/{self.comment_id}", {"body": body})
         else:

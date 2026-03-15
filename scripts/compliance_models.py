@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-COMMENT_MARKER = "<!-- soc2-compliance-bot -->"
+COMMENT_MARKER_PREFIX = "<!-- soc2-compliance-bot"
 SUPPORTED_REVIEWERS = ("coderabbit", "aikido", "greptile")
 
 
@@ -34,4 +34,3 @@ class ComplianceConfig:
     run_id: str
     commit_sha: str
     review_gate_recheck_seconds: int
-
