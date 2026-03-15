@@ -59,6 +59,7 @@ class SeverityTests(unittest.TestCase):
     def test_is_real_review_filters_placeholders(self):
         self.assertFalse(is_real_review("review in progress by coderabbit", "coderabbit"))
         self.assertTrue(is_real_review("Reviews paused\nWalkthrough", "coderabbit"))
+        self.assertTrue(is_real_review("review in progress by coderabbit\nActions performed\nFull review triggered.", "coderabbit"))
         self.assertTrue(is_real_review("Walkthrough\nLooks good", "coderabbit"))
         self.assertTrue(is_real_review("security review complete", "aikido"))
 

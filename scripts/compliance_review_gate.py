@@ -257,8 +257,10 @@ def is_real_review(result: str, reviewer: str) -> bool:
 
     low = result.lower()
     if "coderabbit" in reviewer.lower():
+        if "actions performed" in low or "full review triggered" in low:
+            return True
         if "reviews paused" in low:
-            return "walkthrough" in low or "actions performed" in low
+            return True
         is_placeholder = (
             "review in progress by coderabbit" in low
             or "currently processing" in low
