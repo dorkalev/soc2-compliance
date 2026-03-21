@@ -235,6 +235,7 @@ def tool_pr_review_threads(state_filter: str | None = None) -> str:
           reviewThreads(first: 100) {
             nodes {
               isResolved
+              isOutdated
               comments(first: 10) {
                 nodes { author { login } body path line }
               }
@@ -261,6 +262,8 @@ def tool_pr_review_threads(state_filter: str | None = None) -> str:
 
     results = []
     for t in threads:
+        if t.get("isOutdated", False):
+            continue
         resolved = t.get("isResolved", False)
         if state_filter == "resolved" and not resolved:
             continue

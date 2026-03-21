@@ -74,6 +74,7 @@ def fetch_review_threads_raw(config: ComplianceConfig) -> list[dict]:
           reviewThreads(first: 100) {
             nodes {
               isResolved
+              isOutdated
               comments(first: 20) {
                 nodes {
                   author { login }
@@ -148,6 +149,8 @@ def collect_blocking_review_findings(config: ComplianceConfig) -> dict:
     unresolved: list[str] = []
     dismissed: list[str] = []
     for thread in threads:
+        if thread.get("isOutdated", False):
+            continue
         comments = thread.get("comments", {}).get("nodes", [])
         is_resolved = thread.get("isResolved", False)
 
