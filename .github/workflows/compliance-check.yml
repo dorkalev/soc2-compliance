@@ -99,9 +99,14 @@ on:
         required: false
         type: string
         default: ""
+      review_gate_only:
+        description: "When true, only run the deterministic review gate (no LLM). Use for lightweight re-checks triggered by comment resolution."
+        required: false
+        type: boolean
+        default: false
     secrets:
       GEMINI_API_KEY:
-        required: true
+        required: false
       LINEAR_API_KEY:
         required: false
       REPO_TOKEN:
@@ -179,6 +184,7 @@ jobs:
           TEST_EXCLUDE_PATHS: ${{ inputs.test_exclude_paths }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          REVIEW_GATE_ONLY: ${{ inputs.review_gate_only }}
         run: |
           set +e
           python scripts/verify_compliance.py > compliance_report.json 2>compliance_stderr.log

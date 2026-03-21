@@ -37,3 +37,4 @@ class ComplianceConfig:
     run_id: str
     commit_sha: str
     review_gate_recheck_seconds: int
+    review_gate_only: bool

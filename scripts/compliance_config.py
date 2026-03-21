@@ -130,4 +130,5 @@ def load_config() -> ComplianceConfig:
         run_id=os.environ.get("GITHUB_RUN_ID", ""),
         commit_sha=os.environ.get("COMMIT_SHA", "")[:7],
         review_gate_recheck_seconds=int(os.environ.get("REVIEW_GATE_RECHECK_SECONDS", "180")),
+        review_gate_only=os.environ.get("REVIEW_GATE_ONLY", "").lower() in {"true", "1", "yes"},
     )

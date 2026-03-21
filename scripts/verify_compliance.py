@@ -887,12 +887,70 @@ def determine_pending_expected_reviewers() -> list[str]:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+def run_review_gate_only(comment: LiveComment) -> dict:
+    """Lightweight mode: only run the deterministic review gate (no LLM)."""
+    comment.add_step("🔄", "Re-checking review gate (lightweight, no LLM)...")
+
+    all_dismissed: list[str] = []
+    gate_failure, dismissed = run_review_gate(CONFIG, comment, phase="recheck")
+    all_dismissed.extend(dismissed)
+
+    if gate_failure:
+        report = gate_failure
+    else:
+        # Gate passed — build a passing report
+        missing = determine_missing_reviewers()
+        report = {
+            "compliant": not missing,
+            "confidence_percent": 100 if not missing else 95,
+            "confidence_threshold": CONFIDENCE_THRESHOLD,
+            "summary": "Review gate passed (lightweight re-check)"
+            if not missing
+            else f"Review gate passed but {len(missing)} reviewer(s) missing",
+            "issues": [f"Missing reviewer: {r}" for r in missing],
+            "tickets_found": [],
+            "invalid_tickets": [],
+            "unspecced_changes": [],
+            "missing_documentation": [],
+            "spec_issues": [],
+            "untested_files": [],
+            "unresolved_reviews": [],
+            "dismissed_reviews": [],
+            "missing_reviewers": missing,
+            "review_gate_phase": "recheck",
+        }
+
+    if all_dismissed:
+        existing = report.get("dismissed_reviews", [])
+        report["dismissed_reviews"] = list(dict.fromkeys(existing + all_dismissed))
+
+    apply_dismissed_review_deductions(report, CONFIDENCE_THRESHOLD)
+    return report
+
+
 def main():
+    comment = LiveComment(CONFIG)
+
+    # Lightweight mode: only run deterministic review gate, no LLM needed
+    if CONFIG.review_gate_only:
+        try:
+            report = run_review_gate_only(comment)
+        except Exception as e:
+            print(f"Review gate crashed: {e}", file=sys.stderr)
+            report = {
+                "compliant": False,
+                "summary": f"Review gate error: {e}",
+                "issues": [str(e)],
+                "tickets_found": [],
+            }
+        comment.finalize(report)
+        print(json.dumps(report, indent=2))
+        return
+
     if not GEMINI_API_KEY:
         print(json.dumps({"compliant": False, "summary": "GEMINI_API_KEY not set", "issues": ["Missing API key"]}))
         return
 
-    comment = LiveComment(CONFIG)
     if EXEMPT:
         comment.add_step("🔄", "Starting **exempt** compliance audit (lightweight)...")
     else:
