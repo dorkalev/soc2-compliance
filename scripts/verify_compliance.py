@@ -534,19 +534,15 @@ For each reviewer:
   (bot logins: coderabbit → "coderabbitai[bot]", qodo → "qodo-code-review[bot]")
 - If they HAVEN'T posted yet, use wait_for_reviewer to wait for them (up to 2 minutes each).
   The PR might have just been opened and the bots need time to run.
-- Once they've posted, scan for CRITICAL or MAJOR severity findings
-- Use pr_review_threads with state_filter="unresolved" to find open threads
-- A critical/major finding is unresolved if: the thread is unresolved AND the
-  original author is a review bot AND no human replied acknowledging it
+- Once they've posted, note that they posted. Do NOT scan for individual findings.
+- Unresolved review findings are handled by the deterministic review gate, not by the LLM agent.
+- Set `unresolved_reviews` to an empty array in your report. The review gate will fill it in.
 
 **Confidence impact:**
-- Bot posted, all findings resolved → no penalty. Good signal.
-- Bot posted, unresolved CRITICAL finding → major penalty (~25-30%). This is a real risk.
-- Bot posted, unresolved MAJOR finding → moderate penalty (~10-15%).
-- Bot posted, only minor/info findings unresolved → no penalty. These are suggestions.
+- Bot posted → no penalty.
 - Bot didn't post even after waiting → minor penalty (~5%). It may be down or not configured.
 
-Report: which reviewers posted, which are missing, and any unresolved critical/major findings.
+Report: which reviewers posted and which are missing. Do NOT report individual findings.
 """
     else:
         reviewers_block = """
@@ -987,6 +983,9 @@ def main():
                 print(f"Deterministic ticket fallback: {found}", file=sys.stderr)
 
         findings["missing_reviewers"] = determine_missing_reviewers()
+        # Strip agent's unresolved_reviews — the deterministic review gate
+        # handles this via thread resolution state, not LLM comment parsing.
+        findings["unresolved_reviews"] = []
         report = enforce_policy(CONFIG, findings)
         report["expected_reviewers"] = determine_pending_expected_reviewers()
 
