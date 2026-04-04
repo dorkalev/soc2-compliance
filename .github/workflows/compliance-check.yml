@@ -55,7 +55,7 @@ on:
         required: false
         type: string
       required_reviewers:
-        description: "Comma-separated required review bots (e.g., 'coderabbit,aikido,greptile') or '*' for all"
+        description: "Comma-separated required review bots (e.g., 'coderabbit,qodo') or '*' for all"
         required: false
         type: string
         default: ""

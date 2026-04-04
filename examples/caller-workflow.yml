@@ -47,7 +47,7 @@ jobs:
 
       # Required review bots — compliance fails if they haven't posted
       # or have unresolved critical/major findings
-      # Options: coderabbit, aikido, greptile (comma-separated), or "*" for all
+      # Options: coderabbit, qodo (comma-separated), or "*" for all
       required_reviewers: "*"
 
       # Minimum confidence score to pass (0-100)

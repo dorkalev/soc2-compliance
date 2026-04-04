@@ -38,6 +38,7 @@ def make_config(**overrides) -> ComplianceConfig:
         "run_id": "12345",
         "commit_sha": "abcdef0",
         "review_gate_recheck_seconds": 180,
+        "review_gate_only": False,
     }
     base.update(overrides)
     return ComplianceConfig(**base)

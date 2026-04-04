@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 
 COMMENT_MARKER_PREFIX = "<!-- soc2-compliance-bot"
-SUPPORTED_REVIEWERS = ("coderabbit", "aikido", "greptile")
+SUPPORTED_REVIEWERS = ("coderabbit", "qodo")
 
 
 @dataclass(frozen=True)

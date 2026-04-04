@@ -7,7 +7,7 @@ AI-powered compliance verification for pull requests. An agent investigates each
 - **Ticket traceability** — verifies PR references valid Linear tickets
 - **Documentation checks** — ensures issue and spec files exist and align with code
 - **Test coverage** — flags changed source files without corresponding tests
-- **Review tool gate** — fast-fails early on unresolved major/critical CodeRabbit/Aikido/Greptile findings, then re-checks at the end on long runs
+- **Review tool gate** — fast-fails early on unresolved major/critical CodeRabbit/Qodo findings, then re-checks at the end on long runs
 - **Confidence scoring** — 0–100% score with configurable pass threshold
 - **Live PR comments** — updates in real-time as the agent investigates
 - **Exempt mode** — lightweight audit for trivial changes via `compliance:exempt` label
@@ -105,7 +105,7 @@ Add the compliance job as a required status check on your protected branches.
 | `issues_path` | No | `issues` | Path to issue requirement files |
 | `specs_path` | No | `specs` | Path to technical spec files |
 | `linear_team_id` | No | - | Linear team ID for filtering |
-| `required_reviewers` | No | `""` | Comma-separated review bots (e.g., `coderabbit,aikido,greptile`) or `*` for all |
+| `required_reviewers` | No | `""` | Comma-separated review bots (e.g., `coderabbit,qodo`) or `*` for all |
 | `confidence_threshold` | No | `70` | Minimum confidence % to pass (0–100) |
 | `pr_labels` | No | `""` | Comma-separated PR labels (for `compliance:exempt` detection) |
 

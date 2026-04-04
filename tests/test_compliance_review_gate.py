@@ -32,7 +32,7 @@ def make_config(**overrides) -> ComplianceConfig:
         "issues_path": "issues",
         "specs_path": "specs",
         "linear_team_id": "",
-        "required_reviewers": ["coderabbit", "greptile"],
+        "required_reviewers": ["coderabbit", "qodo"],
         "expected_reviewers": [],
         "confidence_threshold": 70,
         "test_exclude_paths": [],
@@ -46,6 +46,7 @@ def make_config(**overrides) -> ComplianceConfig:
         "run_id": "",
         "commit_sha": "",
         "review_gate_recheck_seconds": 180,
+        "review_gate_only": False,
     }
     base.update(overrides)
     return ComplianceConfig(**base)
@@ -55,8 +56,7 @@ class SeverityTests(unittest.TestCase):
     def test_severity_for_known_bots(self):
         self.assertEqual(severity_for_bot_comment("coderabbit", "Critical bug"), "critical")
         self.assertEqual(severity_for_bot_comment("coderabbit", "Potential issue found"), "major")
-        self.assertEqual(severity_for_bot_comment("aikido", "High severity"), "major")
-        self.assertEqual(severity_for_bot_comment("greptile", "Any feedback"), "major")
+        self.assertEqual(severity_for_bot_comment("qodo", "Potential issue found"), "major")
         self.assertIsNone(severity_for_bot_comment("coderabbit", "nit: rename variable"))
 
     def test_is_real_review_filters_placeholders(self):
@@ -64,13 +64,7 @@ class SeverityTests(unittest.TestCase):
         self.assertTrue(is_real_review("Reviews paused\nWalkthrough", "coderabbit"))
         self.assertTrue(is_real_review("review in progress by coderabbit\nActions performed\nFull review triggered.", "coderabbit"))
         self.assertTrue(is_real_review("Walkthrough\nLooks good", "coderabbit"))
-        self.assertTrue(is_real_review("security review complete", "aikido"))
-
-    def test_reviewer_requirement_satisfied_allows_greptile_bypass(self):
-        bypass = "Too many files changed for review. (`153 files found`, `100 file limit`)"
-        self.assertTrue(reviewer_bypassed(bypass, "greptile"))
-        self.assertTrue(reviewer_requirement_satisfied(bypass, "greptile"))
-        self.assertFalse(reviewer_requirement_satisfied("(no comments found)", "greptile"))
+        self.assertTrue(is_real_review("code review complete", "qodo"))
 
 
 class ReviewGateCollectionTests(unittest.TestCase):
@@ -96,8 +90,8 @@ class ReviewGateCollectionTests(unittest.TestCase):
                 "comments": {
                     "nodes": [
                         {
-                            "author": {"login": "greptile-apps[bot]"},
-                            "body": "Possible auth bypass",
+                            "author": {"login": "qodo-code-review[bot]"},
+                            "body": "Major: Possible auth bypass",
                             "path": "src/auth.py",
                             "line": 9,
                             "reactions": {"nodes": []},
@@ -143,7 +137,7 @@ class ReviewGateCollectionTests(unittest.TestCase):
         )
         self.assertEqual(
             findings["dismissed_reviews"],
-            ["greptile MAJOR on src/auth.py:9: Possible auth bypass | Developer: Handled in a follow-up diff"],
+            ["qodo MAJOR on src/auth.py:9: Major: Possible auth bypass | Developer: Handled in a follow-up diff"],
         )
         self.assertIsNone(findings["error"])
 
@@ -153,7 +147,7 @@ class ReviewGateCollectionTests(unittest.TestCase):
             "confidence_threshold": 70,
             "dismissed_reviews": [
                 "coderabbit CRITICAL on src/db.py:42: SQL injection",
-                "greptile MAJOR on src/auth.py:9: bypass",
+                "qodo MAJOR on src/auth.py:9: bypass",
             ],
             "issues": [],
             "compliant": True,

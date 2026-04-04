@@ -38,6 +38,7 @@ def make_config(**overrides) -> ComplianceConfig:
         "run_id": "",
         "commit_sha": "",
         "review_gate_recheck_seconds": 180,
+        "review_gate_only": False,
     }
     base.update(overrides)
     return ComplianceConfig(**base)
@@ -83,7 +84,7 @@ class PolicyTests(unittest.TestCase):
             "spec_issues": [],
             "untested_files": ["generated/schema.py", "src/service.py"],
             "unresolved_reviews": ["coderabbit CRITICAL on src/db.py:42: SQL injection"],
-            "dismissed_reviews": ["greptile MAJOR on src/auth.py:9: bypass"],
+            "dismissed_reviews": ["qodo MAJOR on src/auth.py:9: bypass"],
             "missing_reviewers": ["coderabbit"],
             "summary": "",
         }

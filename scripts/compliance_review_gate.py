@@ -7,8 +7,7 @@ from compliance_models import ComplianceConfig
 
 BOT_LOGINS = {
     "coderabbit": "coderabbitai[bot]",
-    "aikido": "aikido-pr-checks[bot]",
-    "greptile": "greptile-apps[bot]",
+    "qodo": "qodo-code-review[bot]",
 }
 
 
@@ -21,9 +20,6 @@ def bot_login_for(reviewer: str) -> str:
 
 
 def reviewer_bypassed(result: str, reviewer: str) -> bool:
-    low = result.lower()
-    if "greptile" in reviewer.lower():
-        return "too many files changed for review" in low
     return False
 
 
@@ -38,15 +34,12 @@ def severity_for_bot_comment(bot_short: str, body: str) -> str | None:
             return "major"
         return None
 
-    if bot_short == "aikido":
+    if bot_short == "qodo":
         if re.search(r"\bcritical\b", text):
             return "critical"
-        if re.search(r"\bmajor\b|\bhigh\b", text):
+        if re.search(r"\bmajor\b|\bpotential issue\b", text):
             return "major"
         return None
-
-    if bot_short == "greptile":
-        return "major"
 
     return None
 
@@ -201,7 +194,7 @@ def build_review_gate_failure_report(
     count = len(unresolved_reviews)
     summary = (
         f"Fast-failed at {phase} review gate: {count} unresolved major/critical "
-        f"CodeRabbit/Greptile/Aikido finding(s)"
+        f"CodeRabbit/Qodo finding(s)"
     )
     return {
         "compliant": False,
