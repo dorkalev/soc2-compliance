@@ -78,6 +78,7 @@ def _default_blocking_criteria(review_phase: str) -> str:
 
 def load_config() -> ComplianceConfig:
     gemini_api_key = os.environ.get("GEMINI_API_KEY")
+    gemini_api_key_fallback = os.environ.get("GEMINI_API_KEY_FALLBACK")
     linear_api_key = os.environ.get("LINEAR_API_KEY")
     github_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("REPO_TOKEN")
     pr_number = os.environ.get("PR_NUMBER", "")
@@ -96,6 +97,7 @@ def load_config() -> ComplianceConfig:
 
     return ComplianceConfig(
         gemini_api_key=gemini_api_key,
+        gemini_api_key_fallback=gemini_api_key_fallback,
         linear_api_key=linear_api_key,
         github_token=github_token,
         pr_number=pr_number,

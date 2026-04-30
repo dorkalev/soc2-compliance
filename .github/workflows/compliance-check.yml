@@ -107,6 +107,8 @@ on:
     secrets:
       GEMINI_API_KEY:
         required: false
+      GEMINI_API_KEY_FALLBACK:
+        required: false
       LINEAR_API_KEY:
         required: false
       REPO_TOKEN:
@@ -159,6 +161,7 @@ jobs:
         id: check
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY_FALLBACK: ${{ secrets.GEMINI_API_KEY_FALLBACK }}
           LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.REPO_TOKEN }}
           REPO_TOKEN: ${{ secrets.REPO_TOKEN }}

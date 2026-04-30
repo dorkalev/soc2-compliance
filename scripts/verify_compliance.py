@@ -36,6 +36,7 @@ from compliance_review_gate import (
 
 CONFIG = load_config()
 GEMINI_API_KEY = CONFIG.gemini_api_key
+GEMINI_API_KEY_FALLBACK = CONFIG.gemini_api_key_fallback
 LINEAR_API_KEY = CONFIG.linear_api_key
 GITHUB_TOKEN = CONFIG.github_token
 PR_NUMBER = CONFIG.pr_number
@@ -741,7 +742,11 @@ def run_agent(comment: LiveComment) -> dict:
     from google import genai
     from google.genai import types
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    api_keys = [k for k in [GEMINI_API_KEY, GEMINI_API_KEY_FALLBACK] if k]
+    if not api_keys:
+        return {"summary": "GEMINI_API_KEY not set", "tickets_found": []}
+    client = genai.Client(api_key=api_keys[0])
+    active_key_idx = 0
     tool_declarations = _build_tool_declarations()
     system_prompt = build_exempt_system_prompt() if EXEMPT else build_system_prompt()
 
@@ -759,7 +764,7 @@ def run_agent(comment: LiveComment) -> dict:
     )
 
     for step in range(MAX_STEPS):
-        # Call Gemini with retry
+        # Call Gemini with retry + key fallback
         response = None
         for attempt in range(MAX_RETRIES):
             try:
@@ -773,6 +778,11 @@ def run_agent(comment: LiveComment) -> dict:
                 err = str(e).lower()
                 if "429" in str(e) or "rate" in err or "resource_exhausted" in err:
                     time.sleep(INITIAL_BACKOFF ** (attempt + 1))
+                    # Switch to fallback key after backing off, before last attempt
+                    if attempt == MAX_RETRIES - 2 and active_key_idx + 1 < len(api_keys):
+                        active_key_idx += 1
+                        print(f"Switching to fallback API key (step {step})", file=sys.stderr)
+                        client = genai.Client(api_key=api_keys[active_key_idx])
                     continue
                 print(f"Gemini error (step {step}): {e}", file=sys.stderr)
                 return {"summary": f"Gemini API error: {e}", "tickets_found": []}

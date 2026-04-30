@@ -10,6 +10,7 @@ SUPPORTED_REVIEWERS = ("coderabbit", "qodo")
 @dataclass(frozen=True)
 class ComplianceConfig:
     gemini_api_key: str | None
+    gemini_api_key_fallback: str | None
     linear_api_key: str | None
     github_token: str | None
     pr_number: str
