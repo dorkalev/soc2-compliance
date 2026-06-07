@@ -11,6 +11,7 @@ from compliance_models import ComplianceConfig
 def make_config(**overrides) -> ComplianceConfig:
     base = {
         "gemini_api_key": "test-key",
+        "gemini_api_key_fallback": "",
         "linear_api_key": "linear-key",
         "github_token": None,
         "pr_number": "42",
@@ -115,6 +116,75 @@ class CommentingTests(unittest.TestCase):
         self.assertIn("## ℹ️ SOC2 Audit Agent: partial audit", comment.last_body)
         self.assertIn("Required review already posted.", comment.last_body)
         self.assertNotIn("Final compliance scoring is blocked until required review posts", comment.last_body)
+
+
+    def test_recheck_phase_does_not_render_no_tickets_found_red_x(self):
+        """The lightweight re-check phase (``review_gate_phase=="recheck"``)
+        runs after a full audit has already passed. It does NOT re-scan
+        the diff for tickets — it only verifies that prior unresolved
+        review findings haven't regressed. The recheck-passed path in
+        ``compliance_review_gate.py`` hardcodes ``tickets_found=[]``,
+        which the previous commenting code rendered as
+        ``❌ No tickets found``, misleading readers into thinking
+        compliance failed even though the gate verdict was ``✅``.
+
+        Pin the fix: when ``review_gate_phase == 'recheck'`` AND the
+        gate is compliant, the tickets line must render as ``✅`` (with
+        a "re-check" qualifier), never ``❌``."""
+        comment = CapturingLiveComment(make_config())
+        report = {
+            "compliant": True,
+            "confidence_percent": 100,
+            "confidence_threshold": 70,
+            "exempt": False,
+            "summary": "Review gate passed (lightweight re-check)",
+            "tickets_found": [],
+            "invalid_tickets": [],
+            "unspecced_changes": [],
+            "missing_documentation": [],
+            "spec_issues": [],
+            "untested_files": [],
+            "unresolved_reviews": [],
+            "dismissed_reviews": [],
+            "missing_reviewers": [],
+            "review_gate_phase": "recheck",
+        }
+
+        comment.finalize(report)
+
+        # The ❌ "No tickets found" line is gone.
+        self.assertNotIn(":x: No tickets found", comment.last_body)
+        # A ✅ "re-check" line is rendered instead.
+        self.assertIn(":white_check_mark: Tickets: re-check (not re-scanned)", comment.last_body)
+        # Overall verdict still passes.
+        self.assertIn("100%", comment.last_body)
+
+    def test_non_recheck_phase_still_renders_no_tickets_found_red_x(self):
+        """Defense: the recheck fix must NOT mask a genuine
+        "no tickets" failure on full-audit / end phases."""
+        comment = CapturingLiveComment(make_config())
+        report = {
+            "compliant": False,
+            "confidence_percent": 60,
+            "confidence_threshold": 70,
+            "exempt": False,
+            "summary": "No Linear tickets found in PR",
+            "tickets_found": [],
+            "invalid_tickets": [],
+            "unspecced_changes": [],
+            "missing_documentation": [],
+            "spec_issues": [],
+            "untested_files": [],
+            "unresolved_reviews": [],
+            "dismissed_reviews": [],
+            "missing_reviewers": [],
+            "review_gate_phase": "end",
+        }
+
+        comment.finalize(report)
+
+        # End/full-audit phase with no tickets must still flag ❌.
+        self.assertIn(":x: No tickets found", comment.last_body)
 
 
 if __name__ == "__main__":

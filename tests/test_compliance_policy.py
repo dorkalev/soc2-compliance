@@ -11,6 +11,7 @@ from compliance_policy import enforce_policy, filter_excluded_paths
 def make_config(**overrides) -> ComplianceConfig:
     base = {
         "gemini_api_key": "test-key",
+        "gemini_api_key_fallback": "",
         "linear_api_key": "linear-key",
         "github_token": "gh-token",
         "pr_number": "42",

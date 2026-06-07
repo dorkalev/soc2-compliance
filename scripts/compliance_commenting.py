@@ -183,6 +183,7 @@ class LiveComment:
             untested = report.get("untested_files", [])
             unresolved = report.get("unresolved_reviews", [])
             missing_reviewers = report.get("missing_reviewers", [])
+            phase = report.get("review_gate_phase", "")
 
             if tickets and not invalid:
                 body += f"  :white_check_mark: Tickets: {', '.join(tickets)}\n"
@@ -190,6 +191,16 @@ class LiveComment:
                 body += f"  :x: Tickets: {', '.join(tickets)}\n"
                 for ticket in invalid:
                     body += f"  - {ticket}\n"
+            elif phase == "recheck" and compliant:
+                # The lightweight re-check phase does NOT re-evaluate
+                # tickets — it only verifies that prior unresolved
+                # review findings haven't regressed. Rendering an empty
+                # ``tickets_found`` list as ❌ here misleads readers
+                # into thinking compliance failed, even though the
+                # gate's overall verdict is ✅ (the prior full audit
+                # already accepted the ticket set). Show a neutral
+                # "re-check skipped" line instead.
+                body += "  :white_check_mark: Tickets: re-check (not re-scanned)\n"
             else:
                 body += "  :x: No tickets found\n"
 
