@@ -206,7 +206,6 @@ def build_review_gate_failure_report(
         "invalid_tickets": [],
         "unspecced_changes": [],
         "missing_documentation": [],
-        "spec_issues": [],
         "untested_files": [],
         "unresolved_reviews": unresolved_reviews,
         "dismissed_reviews": dismissed_reviews or [],

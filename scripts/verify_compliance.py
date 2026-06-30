@@ -47,8 +47,6 @@ PR_AUTHOR = CONFIG.pr_author
 TARGET_REPO = CONFIG.target_repo
 BASE_BRANCH = CONFIG.base_branch
 TICKET_PATTERN = CONFIG.ticket_pattern
-ISSUES_PATH = CONFIG.issues_path
-SPECS_PATH = CONFIG.specs_path
 LINEAR_TEAM_ID = CONFIG.linear_team_id
 REQUIRED_REVIEWERS = CONFIG.required_reviewers
 EXPECTED_REVIEWERS = CONFIG.expected_reviewers
@@ -493,7 +491,6 @@ When done, call submit_report with a JSON string containing:
   "invalid_tickets": [],
   "unspecced_changes": [],
   "missing_documentation": [],
-  "spec_issues": [],
   "untested_files": [],
   "unresolved_reviews": [],
   "missing_reviewers": [],
@@ -902,7 +899,6 @@ def run_review_gate_only(comment: LiveComment) -> dict:
             "invalid_tickets": [],
             "unspecced_changes": [],
             "missing_documentation": [],
-            "spec_issues": [],
             "untested_files": [],
             "unresolved_reviews": [],
             "dismissed_reviews": [],
