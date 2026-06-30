@@ -10,8 +10,6 @@ def calculate_score(findings: dict) -> int:
     score = 100
     score -= 10 * len(findings.get("invalid_tickets", []))
     score -= 10 * len(findings.get("unspecced_changes", []))
-    score -= 10 * len(findings.get("missing_documentation", []))
-    score -= 10 * len(findings.get("spec_issues", []))
     score -= 5 * len(findings.get("untested_files", []))
     score -= 5 * len(findings.get("missing_reviewers", []))
     return max(0, min(100, score))
@@ -119,12 +117,6 @@ def enforce_policy(config: ComplianceConfig, findings: dict) -> dict:
         report["issues"].append(
             f"{len(report['unspecced_changes'])} file(s) changed without ticket coverage"
         )
-    if report["missing_documentation"]:
-        report["issues"].append(
-            f"{len(report['missing_documentation'])} ticket(s) missing issues/ or specs/ files"
-        )
-    if report["spec_issues"]:
-        report["issues"].append(f"{len(report['spec_issues'])} spec alignment issue(s)")
     if report["untested_files"]:
         report["issues"].append(f"{len(report['untested_files'])} source file(s) with no test coverage")
     if report["missing_reviewers"]:

@@ -67,7 +67,7 @@ def _default_agent_name(review_phase: str) -> str:
 def _default_blocking_criteria(review_phase: str) -> str:
     if review_phase in {"awaiting-review", "pre-review"}:
         return (
-            "ticket coverage, documentation/spec coverage, or test coverage violates policy. "
+            "ticket coverage or test coverage violates policy. "
             "Review-bot findings are excluded in this phase."
         )
     return (

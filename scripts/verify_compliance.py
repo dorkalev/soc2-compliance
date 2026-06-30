@@ -353,7 +353,7 @@ def _build_tool_declarations():
         ),
         types.FunctionDeclaration(
             name="read_file",
-            description="Read a file's contents. Use for issues/*.md, specs/*.md, or source files.",
+            description="Read a file's contents.",
             parameters=types.Schema(
                 type="OBJECT",
                 properties={
@@ -364,7 +364,7 @@ def _build_tool_declarations():
         ),
         types.FunctionDeclaration(
             name="list_directory",
-            description="List files and subdirectories at a path. Use to explore issues/, specs/, tests/ directories.",
+            description="List files and subdirectories at a path.",
             parameters=types.Schema(
                 type="OBJECT",
                 properties={
@@ -426,7 +426,7 @@ def _build_tool_declarations():
                 properties={
                     "findings_json": types.Schema(
                         type="STRING",
-                        description='JSON string with findings. Required keys: confidence_percent (integer 0-100), tickets_found (list), invalid_tickets (list), unspecced_changes (list), missing_documentation (list), untested_files (list), unresolved_reviews (list), spec_issues (list), missing_reviewers (list), summary (string)',
+                        description='JSON string with findings. Required keys: confidence_percent (integer 0-100), tickets_found (list), invalid_tickets (list), unspecced_changes (list), missing_documentation (list), untested_files (list), unresolved_reviews (list), missing_reviewers (list), summary (string)',
                     ),
                 },
                 required=["findings_json"],
@@ -562,8 +562,6 @@ No required reviewers configured. Skip this check.
 {pr_author_line}
 - Base branch: {BASE_BRANCH}
 - Ticket pattern: {TICKET_PATTERN}
-- Issues path: {ISSUES_PATH}/
-- Specs path: {SPECS_PATH}/
 
 ## PR Title
 {PR_TITLE or "(no title)"}
@@ -592,13 +590,7 @@ Work through these checks in order. Use tools to gather evidence — don't guess
 - Flag any code changes that aren't traceable to a listed ticket
 - Minor files (config, lock files, formatting-only) can share a ticket
 
-### 3. Issue & Spec Files
-- Use list_directory to check {ISSUES_PATH}/ and {SPECS_PATH}/ directories
-- For each ticket, verify {{ISSUES_PATH}}/{{TICKET}}.md exists (use read_file)
-- Check that at least one spec file describes the feature being built (use read_file)
-- Flag: missing files or empty/placeholder content (a file containing only a ticket ID is not a real spec)
-
-### 4. Test Coverage
+### 3. Test Coverage
 - Use git_diff_stat to identify changed source files
 - For each changed source file, check if a corresponding test file exists or was modified
   Common patterns: test_foo.py, foo_test.py, foo.test.ts, foo.spec.ts, __tests__/foo.ts
@@ -615,8 +607,7 @@ When done, call submit_report with a JSON string containing:
   "tickets_found": ["TICKET-1"],
   "invalid_tickets": ["TICKET-X: reason"],
   "unspecced_changes": ["path/file.py: not covered by any ticket"],
-  "missing_documentation": ["TICKET-1: no issues/TICKET-1.md found"],
-  "spec_issues": ["specs/foo.md is empty or placeholder"],
+  "missing_documentation": [],
   "untested_files": ["src/auth.py: no test file found"],
   "unresolved_reviews": ["CodeRabbit CRITICAL on src/db.py:42: SQL injection (unresolved)"],
   "missing_reviewers": ["qodo"],
@@ -628,7 +619,7 @@ When done, call submit_report with a JSON string containing:
 Start at 100% and ONLY deduct for concrete, documented issues you found. Use this exact rubric:
 
 ### MANDATORY (auto-fail regardless of score)
-These three items are hard requirements. The PR will be rejected even if the score is above the threshold:
+These items are hard requirements. The PR will be rejected even if the score is above the threshold:
 
 | Deduction | Reason |
 |-----------|--------|
@@ -641,12 +632,10 @@ These three items are hard requirements. The PR will be rejected even if the sco
 |-----------|--------|
 | -10% per ticket | Ticket referenced but not found in Linear |
 | -10% per file | Source file changed with no ticket coverage |
-| -10% per ticket | Missing issues/TICKET.md file |
-| -10% per ticket | Missing or empty spec file |
 | -5% per file | Source file with no corresponding test file |
 | -5% per reviewer | Required reviewer that didn't post |
 
-If ALL checks pass with no issues, the score MUST be 100%. Do not deduct points for subjective concerns like "spec could be more detailed" or "tests could be more thorough." Only deduct for concrete missing items listed in the rubric above.
+If ALL checks pass with no issues, the score MUST be 100%. Do not deduct points for subjective concerns like "tests could be more thorough." Only deduct for concrete missing items listed in the rubric above.
 
 The threshold for passing is {CONFIDENCE_THRESHOLD}%.
 
@@ -685,18 +674,10 @@ def annotate_tool_call(comment: LiveComment, name: str, args: dict, result: str)
             label = f"**{tid}** — {title}" if title else f"**{tid}** verified"
             comment.add_step("✅", label)
 
-    elif name == "list_directory":
-        path = args.get("path", ".")
-        if ISSUES_PATH in path or SPECS_PATH in path:
-            found = result.count("file ")
-            comment.add_step("📁", f"`{path}/` — {found} files")
-
     elif name == "read_file":
         path = args.get("path", "")
         if "File not found" in result:
             comment.add_step("❌", f"`{path}` — not found")
-        elif ISSUES_PATH in path or SPECS_PATH in path:
-            comment.add_step("📄", f"`{path}` — read")
 
     elif name == "git_ls_files":
         pattern = args.get("pattern", "")

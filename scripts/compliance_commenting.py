@@ -178,8 +178,6 @@ class LiveComment:
             tickets = report.get("tickets_found", [])
             invalid = report.get("invalid_tickets", [])
             unspecced = report.get("unspecced_changes", [])
-            missing_docs = report.get("missing_documentation", [])
-            spec_issues = report.get("spec_issues", [])
             untested = report.get("untested_files", [])
             unresolved = report.get("unresolved_reviews", [])
             missing_reviewers = report.get("missing_reviewers", [])
@@ -205,11 +203,6 @@ class LiveComment:
                 body += "  :x: No tickets found\n"
 
             body += self._scorecard_line(unspecced, "All changes covered by tickets", "Untracked changes")
-            body += self._scorecard_line(
-                missing_docs + spec_issues,
-                "Issue & spec files present",
-                "Documentation gaps",
-            )
             body += self._scorecard_line(untested, "Test coverage", "Missing tests")
 
             dismissed = report.get("dismissed_reviews", [])
