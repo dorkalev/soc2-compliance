@@ -8,7 +8,7 @@ receiving a pre-built context dump. Updates a live PR comment as it works.
 Checks:
   0. Deterministic review gate (fast fail on unresolved major/critical bot findings)
   1. Ticket traceability (Linear → PR → code)
-  2. Documentation (issues/ and specs/ files exist and align)
+  2. Change traceability (every changed file maps to a ticket)
   3. Test coverage (changed source files have tests)
   4. Review tools (CodeRabbit findings addressed)
 """
@@ -592,10 +592,16 @@ Work through these checks in order. Use tools to gather evidence — don't guess
 - Use git_diff_stat to see all changed files
 - Verify each ticket has corresponding code changes in the diff
 
-### 2. Change Documentation
+### 2. Change Traceability
 - Check that all changed files are covered by a ticket in the PR description
 - Flag any code changes that aren't traceable to a listed ticket
 - Minor files (config, lock files, formatting-only) can share a ticket
+
+NOTE — NOT IN SCOPE: Issue/spec documentation files (issues/*.md, specs/*.md)
+are obsolete. Do NOT look for them, do NOT require them, and NEVER flag missing
+issue or spec documentation. The PR description and Linear tickets are the
+authoritative record. `missing_documentation` is used ONLY for an empty or
+too-brief PR description (check 0) — never for issue/spec files.
 
 ### 3. Test Coverage
 - Use git_diff_stat to identify changed source files
