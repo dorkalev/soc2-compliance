@@ -10,7 +10,7 @@ Checks:
   1. Ticket traceability (Linear → PR → code)
   2. Documentation (issues/ and specs/ files exist and align)
   3. Test coverage (changed source files have tests)
-  4. Review tools (CodeRabbit, Qodo findings addressed)
+  4. Review tools (CodeRabbit findings addressed)
 """
 
 import json
@@ -383,7 +383,7 @@ def _build_tool_declarations():
         ),
         types.FunctionDeclaration(
             name="pr_comments",
-            description="Fetch PR comments. Filter by bot name to check if a review tool has posted (e.g. 'coderabbitai[bot]', 'qodo-code-review[bot]').",
+            description="Fetch PR comments. Filter by bot name to check if a review tool has posted (e.g. 'coderabbitai[bot]').",
             parameters=types.Schema(
                 type="OBJECT",
                 properties={
@@ -393,11 +393,11 @@ def _build_tool_declarations():
         ),
         types.FunctionDeclaration(
             name="wait_for_reviewer",
-            description="Wait for a review bot to post its review, polling every 30s. Use when a reviewer hasn't posted yet. Pass the short name: 'coderabbit' or 'qodo'.",
+            description="Wait for a review bot to post its review, polling every 30s. Use when a reviewer hasn't posted yet. Pass the short name: 'coderabbit'.",
             parameters=types.Schema(
                 type="OBJECT",
                 properties={
-                    "reviewer": types.Schema(type="STRING", description="Reviewer short name: 'coderabbit' or 'qodo'"),
+                    "reviewer": types.Schema(type="STRING", description="Reviewer short name: 'coderabbit'"),
                     "max_wait": types.Schema(type="INTEGER", description="Max seconds to wait (default: 120)"),
                 },
                 required=["reviewer"],
@@ -529,7 +529,7 @@ def build_system_prompt() -> str:
 ### 5. Review Tools ({names})
 For each reviewer:
 - First use pr_comments with author_filter to check if they already posted
-  (bot logins: coderabbit → "coderabbitai[bot]", qodo → "qodo-code-review[bot]")
+  (bot logins: coderabbit → "coderabbitai[bot]")
 - If they HAVEN'T posted yet, use wait_for_reviewer to wait for them (up to 2 minutes each).
   The PR might have just been opened and the bots need time to run.
 - Once they've posted, note that they posted. Do NOT scan for individual findings.
@@ -607,7 +607,7 @@ When done, call submit_report with a JSON string containing:
   "missing_documentation": [],
   "untested_files": ["src/auth.py: no test file found"],
   "unresolved_reviews": ["CodeRabbit CRITICAL on src/db.py:42: SQL injection (unresolved)"],
-  "missing_reviewers": ["qodo"],
+  "missing_reviewers": ["coderabbit"],
   "summary": "Brief summary of findings"
 }}
 
