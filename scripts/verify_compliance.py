@@ -10,7 +10,7 @@ Checks:
   1. Ticket traceability (Linear → PR → code)
   2. Documentation (issues/ and specs/ files exist and align)
   3. Test coverage (changed source files have tests)
-  4. Review tools (CodeRabbit, Qodo findings addressed)
+  4. Review tools (CodeRabbit findings addressed)
 """
 
 import json
@@ -64,6 +64,16 @@ MAX_TOOL_OUTPUT = 50_000  # chars per tool result
 MAX_RETRIES = 5
 INITIAL_BACKOFF = 2
 REVIEW_GATE_RECHECK_SECONDS = CONFIG.review_gate_recheck_seconds
+
+
+def extract_pr_tickets(title: str, body: str, pattern: str) -> list[str]:
+    """Deterministically extract ticket IDs from the PR title + body.
+
+    Ticket presence is a hard compliance gate, so it must be LLM-independent and
+    identical across the audit and review-gate agents (and survive an agent
+    crash or truncated response). Order-preserving and de-duplicated.
+    """
+    return list(dict.fromkeys(re.findall(pattern, f"{title}\n{body}")))
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +393,7 @@ def _build_tool_declarations():
         ),
         types.FunctionDeclaration(
             name="pr_comments",
-            description="Fetch PR comments. Filter by bot name to check if a review tool has posted (e.g. 'coderabbitai[bot]', 'qodo-code-review[bot]').",
+            description="Fetch PR comments. Filter by bot name to check if a review tool has posted (e.g. 'coderabbitai[bot]').",
             parameters=types.Schema(
                 type="OBJECT",
                 properties={
@@ -393,11 +403,11 @@ def _build_tool_declarations():
         ),
         types.FunctionDeclaration(
             name="wait_for_reviewer",
-            description="Wait for a review bot to post its review, polling every 30s. Use when a reviewer hasn't posted yet. Pass the short name: 'coderabbit' or 'qodo'.",
+            description="Wait for a review bot to post its review, polling every 30s. Use when a reviewer hasn't posted yet. Pass the short name: 'coderabbit'.",
             parameters=types.Schema(
                 type="OBJECT",
                 properties={
-                    "reviewer": types.Schema(type="STRING", description="Reviewer short name: 'coderabbit' or 'qodo'"),
+                    "reviewer": types.Schema(type="STRING", description="Reviewer short name: 'coderabbit'"),
                     "max_wait": types.Schema(type="INTEGER", description="Max seconds to wait (default: 120)"),
                 },
                 required=["reviewer"],
@@ -529,7 +539,7 @@ def build_system_prompt() -> str:
 ### 5. Review Tools ({names})
 For each reviewer:
 - First use pr_comments with author_filter to check if they already posted
-  (bot logins: coderabbit → "coderabbitai[bot]", qodo → "qodo-code-review[bot]")
+  (bot logins: coderabbit → "coderabbitai[bot]")
 - If they HAVEN'T posted yet, use wait_for_reviewer to wait for them (up to 2 minutes each).
   The PR might have just been opened and the bots need time to run.
 - Once they've posted, note that they posted. Do NOT scan for individual findings.
@@ -607,7 +617,7 @@ When done, call submit_report with a JSON string containing:
   "missing_documentation": [],
   "untested_files": ["src/auth.py: no test file found"],
   "unresolved_reviews": ["CodeRabbit CRITICAL on src/db.py:42: SQL injection (unresolved)"],
-  "missing_reviewers": ["qodo"],
+  "missing_reviewers": ["coderabbit"],
   "summary": "Brief summary of findings"
 }}
 
@@ -773,7 +783,26 @@ def run_agent(comment: LiveComment) -> dict:
             print(f"Gemini returned no candidates at step {step}", file=sys.stderr)
             return {"summary": "Gemini returned empty response", "tickets_found": []}
         candidate = response.candidates[0]
-        parts = candidate.content.parts if candidate.content else []
+        # Gemini can return a candidate whose content.parts is None when the
+        # response is truncated (finish_reason MAX_TOKENS) or filtered
+        # (SAFETY/RECITATION). Guard against iterating None — otherwise the whole
+        # compliance run crashes with "'NoneType' object is not iterable" and the
+        # gate fails for a tooling reason rather than a real violation.
+        parts = (candidate.content.parts if candidate.content else None) or []
+        if not parts:
+            finish_reason = getattr(candidate, "finish_reason", None)
+            print(
+                f"Gemini returned no content parts at step {step} "
+                f"(finish_reason={finish_reason})",
+                file=sys.stderr,
+            )
+            return {
+                "summary": (
+                    f"Gemini returned no content parts (finish_reason={finish_reason}); "
+                    "the diff may be too large to analyze in one pass."
+                ),
+                "tickets_found": [],
+            }
 
         # Collect function calls from response
         function_calls = [p for p in parts if getattr(p, "function_call", None)]
@@ -943,6 +972,12 @@ def main():
         comment.add_step("🔄", "Starting compliance audit...")
     started_at = time.time()
 
+    # Ticket hunting is deterministic and LLM-independent: extract ticket IDs
+    # from the PR title/body up-front (using the configured pattern) so ticket
+    # presence — a hard compliance gate — is identical across the audit and
+    # review-gate agents and survives an agent crash or truncated LLM response.
+    deterministic_tickets = extract_pr_tickets(PR_TITLE, PR_BODY, TICKET_PATTERN)
+
     try:
         all_dismissed: list[str] = []
 
@@ -958,16 +993,12 @@ def main():
 
         findings = run_agent(comment)
 
-        # Deterministic fallback: if the agent didn't extract tickets (crash,
-        # malformed JSON, etc.), extract them from PR title/body using the
-        # configured ticket pattern.  Ticket presence is a hard gate in
-        # enforce_policy, so it must not depend on the LLM.
+        # The LLM's tickets_found only supplements the deterministic list;
+        # ticket presence never depends on the agent completing successfully.
         if not findings.get("tickets_found"):
-            text = f"{PR_TITLE}\n{PR_BODY}"
-            found = list(dict.fromkeys(re.findall(TICKET_PATTERN, text)))
-            if found:
-                findings["tickets_found"] = found
-                print(f"Deterministic ticket fallback: {found}", file=sys.stderr)
+            findings["tickets_found"] = deterministic_tickets
+            if deterministic_tickets:
+                print(f"Deterministic ticket extraction: {deterministic_tickets}", file=sys.stderr)
 
         findings["missing_reviewers"] = determine_missing_reviewers()
         # Strip agent's unresolved_reviews — the deterministic review gate
@@ -1011,7 +1042,9 @@ def main():
             "compliant": False,
             "summary": f"Compliance agent error: {e}",
             "issues": [str(e)],
-            "tickets_found": [],
+            # Tickets are extracted deterministically above, so the audit trail
+            # still records them even when the agent crashes.
+            "tickets_found": deterministic_tickets,
         }
 
     comment.finalize(report)

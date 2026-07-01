@@ -85,7 +85,7 @@ class PolicyTests(unittest.TestCase):
             "spec_issues": [],
             "untested_files": ["generated/schema.py", "src/service.py"],
             "unresolved_reviews": ["coderabbit CRITICAL on src/db.py:42: SQL injection"],
-            "dismissed_reviews": ["qodo MAJOR on src/auth.py:9: bypass"],
+            "dismissed_reviews": ["coderabbit MAJOR on src/auth.py:9: bypass"],
             "missing_reviewers": ["coderabbit"],
             "summary": "",
         }

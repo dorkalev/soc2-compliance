@@ -7,7 +7,6 @@ from compliance_models import ComplianceConfig
 
 BOT_LOGINS = {
     "coderabbit": "coderabbitai[bot]",
-    "qodo": "qodo-code-review[bot]",
 }
 
 
@@ -28,13 +27,6 @@ def severity_for_bot_comment(bot_short: str, body: str) -> str | None:
     text = (body or "").lower()
 
     if bot_short == "coderabbit":
-        if re.search(r"\bcritical\b", text):
-            return "critical"
-        if re.search(r"\bmajor\b|\bpotential issue\b", text):
-            return "major"
-        return None
-
-    if bot_short == "qodo":
         if re.search(r"\bcritical\b", text):
             return "critical"
         if re.search(r"\bmajor\b|\bpotential issue\b", text):
@@ -194,7 +186,7 @@ def build_review_gate_failure_report(
     count = len(unresolved_reviews)
     summary = (
         f"Fast-failed at {phase} review gate: {count} unresolved major/critical "
-        f"CodeRabbit/Qodo finding(s)"
+        f"CodeRabbit finding(s)"
     )
     return {
         "compliant": False,

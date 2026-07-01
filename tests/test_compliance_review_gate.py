@@ -33,7 +33,7 @@ def make_config(**overrides) -> ComplianceConfig:
         "issues_path": "issues",
         "specs_path": "specs",
         "linear_team_id": "",
-        "required_reviewers": ["coderabbit", "qodo"],
+        "required_reviewers": ["coderabbit"],
         "expected_reviewers": [],
         "confidence_threshold": 70,
         "test_exclude_paths": [],
@@ -57,7 +57,6 @@ class SeverityTests(unittest.TestCase):
     def test_severity_for_known_bots(self):
         self.assertEqual(severity_for_bot_comment("coderabbit", "Critical bug"), "critical")
         self.assertEqual(severity_for_bot_comment("coderabbit", "Potential issue found"), "major")
-        self.assertEqual(severity_for_bot_comment("qodo", "Potential issue found"), "major")
         self.assertIsNone(severity_for_bot_comment("coderabbit", "nit: rename variable"))
 
     def test_is_real_review_filters_placeholders(self):
@@ -65,7 +64,6 @@ class SeverityTests(unittest.TestCase):
         self.assertTrue(is_real_review("Reviews paused\nWalkthrough", "coderabbit"))
         self.assertTrue(is_real_review("review in progress by coderabbit\nActions performed\nFull review triggered.", "coderabbit"))
         self.assertTrue(is_real_review("Walkthrough\nLooks good", "coderabbit"))
-        self.assertTrue(is_real_review("code review complete", "qodo"))
 
 
 class ReviewGateCollectionTests(unittest.TestCase):
@@ -91,7 +89,7 @@ class ReviewGateCollectionTests(unittest.TestCase):
                 "comments": {
                     "nodes": [
                         {
-                            "author": {"login": "qodo-code-review[bot]"},
+                            "author": {"login": "coderabbitai[bot]"},
                             "body": "Major: Possible auth bypass",
                             "path": "src/auth.py",
                             "line": 9,
@@ -138,7 +136,7 @@ class ReviewGateCollectionTests(unittest.TestCase):
         )
         self.assertEqual(
             findings["dismissed_reviews"],
-            ["qodo MAJOR on src/auth.py:9: Major: Possible auth bypass | Developer: Handled in a follow-up diff"],
+            ["coderabbit MAJOR on src/auth.py:9: Major: Possible auth bypass | Developer: Handled in a follow-up diff"],
         )
         self.assertIsNone(findings["error"])
 
@@ -148,7 +146,7 @@ class ReviewGateCollectionTests(unittest.TestCase):
             "confidence_threshold": 70,
             "dismissed_reviews": [
                 "coderabbit CRITICAL on src/db.py:42: SQL injection",
-                "qodo MAJOR on src/auth.py:9: bypass",
+                "coderabbit MAJOR on src/auth.py:9: bypass",
             ],
             "issues": [],
             "compliant": True,
